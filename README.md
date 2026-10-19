@@ -1,6 +1,6 @@
 # TG Stream — private Telegram channel → public video website
 
-**LIVE:** https://tg-stream-bebcf.containers.snapdeploy.app · repo: https://github.com/ramwanstream/tg-stream
+**LIVE:** https://ramwanstream.alwaysdata.net · repo: https://github.com/ramwanstream/tg-stream
 
 YouTube-like public site. Videos live in a **private** Telegram channel;
 visitors watch them on the website. No Telegram credentials ever reach the browser.
@@ -56,22 +56,25 @@ cd backend && ./start.sh        # first run prints the ADMIN_TOKEN
 
 ## Deploy (free)
 
-SnapDeploy (no credit card needed): **New Container → Deploy from GitHub** →
-connect `ramwanstream/tg-stream` → the `Dockerfile` at repo root is detected →
-port 8000 → set env vars `TELEGRAM_APP_ID` / `TELEGRAM_APP_HASH` (from
-my.telegram.org) and `ADMIN_TOKEN` → deploy. One container runs everything
-(API + site). Public URL: `https://tg-stream-bebcf.containers.snapdeploy.app`
+AlwaysData (no credit card, free for life): sign up → create account → in the
+admin panel open the web terminal (SSH on the Web) and run:
+`git clone https://github.com/<you>/tg-stream.git`, `python3 -m venv venv`,
+`./venv/bin/pip install -r requirements.txt` inside `tg-stream/backend`.
+Then Web > Sites > Add a site, Type **User program**:
+- Command: `/home/<account>/tg-stream/backend/venv/bin/uvicorn app:app --host $IP --port $PORT`
+- Working directory: `/home/<account>/tg-stream/backend`
+- Environment: `TELEGRAM_APP_ID=… TELEGRAM_APP_HASH=… ADMIN_TOKEN=…`
+One process runs everything (API + site). Live at
+`https://<account>.alwaysdata.net`. Disk is persistent (SQLite + Telegram
+session survive restarts — no re-login needed after restarts).
 
-(Render was tried first but now requires a credit card on file even for the
-free tier — skipped per the no-card rule. `render.yaml` is kept for reference;
-it uses the same `TELEGRAM_APP_*` env names.)
-
-Free-tier honesty: the free container sleeps after 15 min idle (first visitor
-waits ~1 min on the wake page); no persistent disk, so SQLite + Telegram
-session reset on redeploy/restart — re-login via the admin page and press
-"Sync channel now" (videos come back automatically since the channel is the
-source of truth). 100 awake-hours/month on the free plan. For production:
-paid instance (no sleep) + Postgres.
+History: Render was tried first but now requires a credit card on file even
+for the free tier — skipped per the no-card rule (`render.yaml` kept for
+reference). SnapDeploy worked briefly, then suspended the account (their
+filter flags Telegram API tooling). Zeabur is shutting down (no new signups);
+Koyeb/Fly.io need cards; Hugging Face Docker Spaces now needs Pro; InfinityFree
+is PHP-only; Glitch shut down app hosting. AlwaysData's "User program" (their
+docs explicitly cover FastAPI/uvicorn) + fully open outbound TCP is what fits.
 
 ## Layout
 
