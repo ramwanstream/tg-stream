@@ -1062,10 +1062,28 @@ async def set_channel(body: dict, _: None = Depends(require_admin)):
         client = await tg.client()
     except RuntimeError as e:
         raise HTTPException(400, f"Telegram login needed first: {e}")
-    try:
-        entity = await client.get_entity(channel_input)
-    except Exception as e:
-        raise HTTPException(400, f"Cannot access that channel: {str(e)[:200]}")
+    entity = None
+    digits = re.sub(r"\D", "", channel_input)
+    is_numeric = bool(digits) and channel_input.strip().lstrip("-+").isdigit()
+    if is_numeric:
+        # private channel pasted as bare ID ("3988054897") or full ("-1003988054897"):
+        # find it in the account's dialogs (refreshes the entity cache too)
+        bare = int(digits[-10:]) if len(digits) > 10 else int(digits)
+        try:
+            async for d in client.iter_dialogs(limit=100):
+                if getattr(d.entity, "id", None) == bare:
+                    entity = d.entity
+                    break
+        except Exception:
+            entity = None
+        if entity is None:
+            raise HTTPException(
+                400, "Cannot access that channel: not found in this account's chats")
+    else:
+        try:
+            entity = await client.get_entity(channel_input)
+        except Exception as e:
+            raise HTTPException(400, f"Cannot access that channel: {str(e)[:200]}")
     tg.save_channel(entity.id)
     return {"ok": True, "channel_id": entity.id,
             "title": getattr(entity, "title", "")}
