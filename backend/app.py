@@ -186,6 +186,10 @@ def require_admin(x_admin_token: Optional[str] = Header(None)):
 # ---------------------------------------------------------------- app
 
 app = FastAPI(title="TG Stream")
+
+# Compress JSON API responses (faster page loads on slow networks)
+from starlette.middleware.gzip import GZipMiddleware
+app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
     allow_origins=["*"],
@@ -250,6 +254,11 @@ class TelegramSource(MediaSource):
     """Production source: MTProto via Telethon. Streams chunks on demand,
     so a 2 GB file never sits fully in server RAM."""
 
+    # Short-lived cache of Telegram document references, keyed by message id.
+    # A video player fires many Range requests back-to-back; without this each
+    # one would cost an extra get_messages round-trip before downloading.
+    _doc_cache: dict = {}
+
     def __init__(self, manager: "TelegramManager", channel_id: int, message_id: int,
                  file_size: int, mime: str):
         self.mgr = manager
@@ -261,19 +270,31 @@ class TelegramSource(MediaSource):
     async def size(self) -> int:
         return self._size
 
-    async def read_range(self, start: int, end: int) -> AsyncIterator[bytes]:
-        client = await self.mgr.client()
-        # Re-fetch the message every request: Telegram file references expire,
+    async def _get_doc(self, client):
+        """Fresh document reference, cached ~90s. File references can expire;
+        on expiry the caller drops the cache entry and retries once."""
+        now = time.time()
+        hit = self._doc_cache.get(self.message_id)
+        if hit and hit[1] > now:
+            return hit[0]
+        # Re-fetch the message: Telegram file references expire,
         # a fresh fetch always gives a valid one.
         msg = await client.get_messages(self.mgr.channel_id, ids=self.message_id)
         if not msg or not msg.media:
             raise FileNotFoundError("Telegram message/file no longer available")
-        doc = msg.media.document if hasattr(msg.media, "document") else None
-        if doc is None:
-            # video messages: document lives under .document too
-            doc = getattr(msg.media, "document", None)
+        doc = getattr(msg.media, "document", None)
         if doc is None:
             raise FileNotFoundError("No downloadable file in this message")
+        self._doc_cache[self.message_id] = (doc, now + 90)
+        return doc
+
+    async def read_range(self, start: int, end: int) -> AsyncIterator[bytes]:
+        from telethon.errors import FileReferenceExpiredError
+        client = await self.mgr.client()
+        try:
+            doc = await self._get_doc(client)
+        except FileNotFoundError:
+            raise
         length = end - start + 1
         # NOTE: iter_download's `limit` counts CHUNKS, not bytes.
         # Compute how many chunks cover `length` bytes, then trim the tail
@@ -281,17 +302,34 @@ class TelegramSource(MediaSource):
         request_size = min(CHUNK_SIZE, length)
         limit = (length + request_size - 1) // request_size + 1
         remaining = length
-        async for chunk in client.iter_download(
-            doc, offset=start, limit=limit, request_size=request_size
-        ):
-            data = bytes(chunk)
-            if len(data) > remaining:
-                data = data[:remaining]
-            if data:
-                yield data
-                remaining -= len(data)
-            if remaining <= 0:
-                break
+        try:
+            async for chunk in client.iter_download(
+                doc, offset=start, limit=limit, request_size=request_size
+            ):
+                data = bytes(chunk)
+                if len(data) > remaining:
+                    data = data[:remaining]
+                if data:
+                    yield data
+                    remaining -= len(data)
+                if remaining <= 0:
+                    break
+        except FileReferenceExpiredError:
+            # Cached reference went stale mid-stream: drop it, re-fetch once.
+            self._doc_cache.pop(self.message_id, None)
+            doc = await self._get_doc(client)
+            remaining = length
+            async for chunk in client.iter_download(
+                doc, offset=start, limit=limit, request_size=request_size
+            ):
+                data = bytes(chunk)
+                if len(data) > remaining:
+                    data = data[:remaining]
+                if data:
+                    yield data
+                    remaining -= len(data)
+                if remaining <= 0:
+                    break
 
 
 # ------------------------------------------------------- telegram manager
@@ -337,6 +375,26 @@ class TelegramManager:
                     proxy=TG_PROXY,
                 )
                 await self._client.connect()
+                # Instant import: when anything lands in the linked channel,
+                # sync it to the website within seconds (poller stays as backup).
+                if not getattr(self._client, "_sh_push_attached", False):
+                    from telethon import events
+
+                    async def _on_channel_post(event):
+                        try:
+                            if self.channel_id and event.chat_id == self.channel_id:
+                                # debounce: at most one push-sync per 10s
+                                now = time.time()
+                                if now - getattr(self, "_last_push", 0) < 10:
+                                    return
+                                self._last_push = now
+                                await sync_channel(limit=10)
+                        except Exception:
+                            pass
+
+                    self._client.add_event_handler(
+                        _on_channel_post, events.NewMessage())
+                    self._client._sh_push_attached = True
             if not await self._client.is_user_authorized():
                 raise RuntimeError("Telegram session not logged in (see /admin setup)")
             return self._client
@@ -499,15 +557,13 @@ def _public_video_row(r: sqlite3.Row, user_id: Optional[int] = None) -> dict:
         "published_at": v["published_at"],
         "thumb_url": f"/api/thumb/{v['id']}" if v["thumb_path"] else None,
         "stream_url": f"/api/stream/{v['id']}",
+        "like_count": v.get("like_count", 0) or 0,
+        "comment_count": v.get("comment_count", 0) or 0,
     }
-    con = db()
-    out["like_count"] = con.execute(
-        "SELECT COUNT(*) c FROM likes WHERE video_id=?", (v["id"],)).fetchone()["c"]
-    out["comment_count"] = con.execute(
-        "SELECT COUNT(*) c FROM comments WHERE video_id=?", (v["id"],)).fetchone()["c"]
     out["liked"] = False
     out["resume_position"] = 0
     if user_id:
+        con = db()
         out["liked"] = bool(con.execute(
             "SELECT 1 FROM likes WHERE user_id=? AND video_id=?",
             (user_id, v["id"])).fetchone())
@@ -516,11 +572,18 @@ def _public_video_row(r: sqlite3.Row, user_id: Optional[int] = None) -> dict:
             (user_id, v["id"])).fetchone()
         if h:
             out["resume_position"] = h["position"]
-    con.close()
+        con.close()
     return out
 
 
 VIDEO_SELECT = """SELECT v.*, c.name AS cat_name, c.slug AS cat_slug
+                  FROM videos v LEFT JOIN categories c ON c.id = v.category_id"""
+
+# Same as VIDEO_SELECT but with like/comment counts baked in — avoids 2 extra
+# queries per video on listing pages (was ~100 queries for a 24-video page).
+VIDEO_SELECT_COUNTS = """SELECT v.*, c.name AS cat_name, c.slug AS cat_slug,
+                  (SELECT COUNT(*) FROM likes l WHERE l.video_id = v.id) AS like_count,
+                  (SELECT COUNT(*) FROM comments cm WHERE cm.video_id = v.id) AS comment_count
                   FROM videos v LEFT JOIN categories c ON c.id = v.category_id"""
 
 
@@ -550,7 +613,7 @@ def list_videos(q: Optional[str] = None, category: Optional[str] = None,
     else:
         order = "v.published_at DESC NULLS LAST, v.id DESC"
         join = ""
-    sql = f"{VIDEO_SELECT}{join} WHERE {' AND '.join(where)} ORDER BY {order}"
+    sql = f"{VIDEO_SELECT_COUNTS}{join} WHERE {' AND '.join(where)} ORDER BY {order}"
     con = db()
     total = con.execute(
         f"SELECT COUNT(*) c FROM videos v LEFT JOIN categories c ON c.id=v.category_id "
@@ -566,7 +629,7 @@ def list_videos(q: Optional[str] = None, category: Optional[str] = None,
 @app.get("/api/videos/{video_id}")
 def video_detail(video_id: int, user: Optional[dict] = Depends(optional_user)):
     con = db()
-    r = con.execute(f"{VIDEO_SELECT} WHERE v.id=?", (video_id,)).fetchone()
+    r = con.execute(f"{VIDEO_SELECT_COUNTS} WHERE v.id=?", (video_id,)).fetchone()
     con.close()
     if not r or row_to_dict(r)["visibility"] != "published":
         raise HTTPException(404, "Video not found")
@@ -575,7 +638,7 @@ def video_detail(video_id: int, user: Optional[dict] = Depends(optional_user)):
     # related: same category first, then latest
     con = db()
     rel = con.execute(
-        f"""{VIDEO_SELECT} WHERE v.visibility='published' AND v.id != ?
+        f"""{VIDEO_SELECT_COUNTS} WHERE v.visibility='published' AND v.id != ?
             ORDER BY (c.slug = ?) DESC, v.published_at DESC LIMIT 8""",
         (video_id, detail["category_slug"])).fetchall()
     con.close()
@@ -604,7 +667,10 @@ def thumb(video_id: int):
         if not p.is_absolute():
             p = (BASE_DIR.parent / p).resolve()
         if p.exists():
-            return FileResponse(str(p), media_type="image/jpeg")
+            # Thumbnails never change once fetched: cache aggressively in
+            # browsers/CDN so grids load instantly on repeat visits.
+            return FileResponse(str(p), media_type="image/jpeg", headers={
+                "Cache-Control": "public, max-age=86400, immutable"})
     raise HTTPException(404, "No thumbnail")
 
 
@@ -817,7 +883,7 @@ async def add_comment(video_id: int, request: Request,
 def my_likes(user: dict = Depends(require_user)):
     con = db()
     rows = con.execute(
-        f"""{VIDEO_SELECT} JOIN likes l ON l.video_id = v.id
+        f"""{VIDEO_SELECT_COUNTS} JOIN likes l ON l.video_id = v.id
             WHERE l.user_id=? AND v.visibility='published'
             ORDER BY l.created_at DESC LIMIT 100""", (user["id"],)).fetchall()
     con.close()
@@ -872,7 +938,7 @@ def playlist_detail(pid: int, user: dict = Depends(require_user)):
         con.close()
         raise HTTPException(404, "Playlist not found")
     items = con.execute(
-        f"""{VIDEO_SELECT} JOIN playlist_items i ON i.video_id = v.id
+        f"""{VIDEO_SELECT_COUNTS} JOIN playlist_items i ON i.video_id = v.id
             WHERE i.playlist_id=? AND v.visibility='published'
             ORDER BY i.position, i.added_at""", (pid,)).fetchall()
     con.close()
@@ -935,7 +1001,7 @@ def save_history(body: dict, user: dict = Depends(require_user)):
 def get_history(user: dict = Depends(require_user)):
     con = db()
     rows = con.execute(
-        f"""{VIDEO_SELECT} JOIN watch_history h ON h.video_id = v.id
+        f"""{VIDEO_SELECT_COUNTS} JOIN watch_history h ON h.video_id = v.id
             WHERE h.user_id=? AND v.visibility='published'
             ORDER BY h.updated_at DESC LIMIT 50""", (user["id"],)).fetchall()
     con.close()
@@ -1110,7 +1176,7 @@ def admin_videos(q: Optional[str] = None, sort: str = "new",
                 " ON w.video_id = v.id")
     else:
         order = "v.id DESC"
-    rows = con.execute(f"{VIDEO_SELECT}{join}{where} ORDER BY {order} LIMIT 200",
+    rows = con.execute(f"{VIDEO_SELECT_COUNTS}{join}{where} ORDER BY {order} LIMIT 200",
                        params).fetchall()
     con.close()
     return [_public_video_row(r) for r in rows]
@@ -1288,4 +1354,12 @@ async def _startup():
 # serve the static frontend (../web) at / — mounted LAST so /api/* routes win
 WEB_DIR = (BASE_DIR / ".." / "web").resolve()
 if WEB_DIR.exists():
-    app.mount("/", StaticFiles(directory=str(WEB_DIR), html=True), name="web")
+    class CachedStatic(StaticFiles):
+        async def get_response(self, path: str, scope):
+            resp = await super().get_response(path, scope)
+            # CSS/JS/images: cache 1 day (filenames don't change between deploys,
+            # HTML pages stay fresh). Makes repeat visits feel instant.
+            if resp.status_code == 200 and not path.endswith(".html"):
+                resp.headers["Cache-Control"] = "public, max-age=86400"
+            return resp
+    app.mount("/", CachedStatic(directory=str(WEB_DIR), html=True), name="web")
