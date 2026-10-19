@@ -65,8 +65,11 @@ def _load_or_create_secret(path: Path, env_val: Optional[str], name: str) -> str
 
 JWT_SECRET = _load_or_create_secret(JWT_SECRET_PATH, os.environ.get("JWT_SECRET"), "JWT_SECRET")
 ADMIN_TOKEN = _load_or_create_secret(ADMIN_TOKEN_PATH, os.environ.get("ADMIN_TOKEN"), "ADMIN_TOKEN")
-TG_API_ID = os.environ.get("TG_API_ID")
-TG_API_HASH = os.environ.get("TG_API_HASH")
+# Telegram API credentials (official API, from https://my.telegram.org).
+# Primary env names: TELEGRAM_APP_ID / TELEGRAM_APP_HASH
+# (TG_API_ID / TG_API_HASH are kept as backwards-compatible aliases).
+TG_API_ID = os.environ.get("TELEGRAM_APP_ID") or os.environ.get("TG_API_ID")
+TG_API_HASH = os.environ.get("TELEGRAM_APP_HASH") or os.environ.get("TG_API_HASH")
 if TG_CONFIG_PATH.exists():
     try:
         cfg = json.loads(TG_CONFIG_PATH.read_text())

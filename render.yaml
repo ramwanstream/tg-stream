@@ -1,6 +1,6 @@
 # Render Blueprint — one-click deploy of the whole site (API + frontend).
 # In Render: New -> Blueprint -> connect your GitHub repo containing this file.
-# Then set TG_API_ID / TG_API_HASH in the dashboard (from my.telegram.org).
+# Then set TELEGRAM_APP_ID / TELEGRAM_APP_HASH in the dashboard (from my.telegram.org).
 services:
   - type: web
     name: tg-stream
@@ -11,9 +11,9 @@ services:
     envVars:
       - key: ADMIN_TOKEN
         generateValue: true
-      - key: TG_API_ID
+      - key: TELEGRAM_APP_ID
         sync: false
-      - key: TG_API_HASH
+      - key: TELEGRAM_APP_HASH
         sync: false
     # NOTE (free tier): no persistent disk, so SQLite + the Telegram session
     # reset on every redeploy. The channel is the source of truth, so videos
