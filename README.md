@@ -1,5 +1,7 @@
 # TG Stream — private Telegram channel → public video website
 
+**LIVE:** https://tg-stream-bebcf.containers.snapdeploy.app · repo: https://github.com/ramwanstream/tg-stream
+
 YouTube-like public site. Videos live in a **private** Telegram channel;
 visitors watch them on the website. No Telegram credentials ever reach the browser.
 
@@ -54,15 +56,22 @@ cd backend && ./start.sh        # first run prints the ADMIN_TOKEN
 
 ## Deploy (free)
 
-Render Blueprint (`render.yaml`): **New → Blueprint** → connect repo →
-set `TG_API_ID` / `TG_API_HASH` env vars → deploy. One web service runs
-everything (API + site).
+SnapDeploy (no credit card needed): **New Container → Deploy from GitHub** →
+connect `ramwanstream/tg-stream` → the `Dockerfile` at repo root is detected →
+port 8000 → set env vars `TELEGRAM_APP_ID` / `TELEGRAM_APP_HASH` (from
+my.telegram.org) and `ADMIN_TOKEN` → deploy. One container runs everything
+(API + site). Public URL: `https://tg-stream-bebcf.containers.snapdeploy.app`
 
-Free-tier honesty: the free web service sleeps after 15 min idle (first visitor
-waits ~1 min); no persistent disk, so SQLite + Telegram session reset on
-redeploy — re-login via the admin page and press "Sync channel now" (videos
-come back automatically since the channel is the source of truth). For
-production: paid instance (no sleep) + Postgres.
+(Render was tried first but now requires a credit card on file even for the
+free tier — skipped per the no-card rule. `render.yaml` is kept for reference;
+it uses the same `TELEGRAM_APP_*` env names.)
+
+Free-tier honesty: the free container sleeps after 15 min idle (first visitor
+waits ~1 min on the wake page); no persistent disk, so SQLite + Telegram
+session reset on redeploy/restart — re-login via the admin page and press
+"Sync channel now" (videos come back automatically since the channel is the
+source of truth). 100 awake-hours/month on the free plan. For production:
+paid instance (no sleep) + Postgres.
 
 ## Layout
 
@@ -72,7 +81,8 @@ backend/  app.py  — entire backend (one file, sectioned, beginner-friendly)
 web/      index.html (home/search/categories) · watch.html (player)
           library.html (auth/playlists/history/liked) · admin.html
           css/style.css · js/{config,app}.js
-render.yaml — Render one-click deploy
+render.yaml — Render one-click deploy (reference; Render now needs a card)
+Dockerfile + .dockerignore — container build (SnapDeploy: repo root, port 8000)
 ```
 
 ## Security notes
