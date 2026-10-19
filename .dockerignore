@@ -1,0 +1,5 @@
+data/
+backend/venv/
+backend/__pycache__/
+.secrets/
+.git/
