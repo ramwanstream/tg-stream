@@ -503,6 +503,8 @@ def _public_video_row(r: sqlite3.Row, user_id: Optional[int] = None) -> dict:
     con = db()
     out["like_count"] = con.execute(
         "SELECT COUNT(*) c FROM likes WHERE video_id=?", (v["id"],)).fetchone()["c"]
+    out["comment_count"] = con.execute(
+        "SELECT COUNT(*) c FROM comments WHERE video_id=?", (v["id"],)).fetchone()["c"]
     out["liked"] = False
     out["resume_position"] = 0
     if user_id:
@@ -524,7 +526,7 @@ VIDEO_SELECT = """SELECT v.*, c.name AS cat_name, c.slug AS cat_slug
 
 @app.get("/api/videos")
 def list_videos(q: Optional[str] = None, category: Optional[str] = None,
-                page: int = 1, per_page: int = 24,
+                page: int = 1, per_page: int = 24, sort: str = "new",
                 user: Optional[dict] = Depends(optional_user)):
     per_page = max(1, min(per_page, 60))
     page = max(1, page)
@@ -536,7 +538,19 @@ def list_videos(q: Optional[str] = None, category: Optional[str] = None,
     if category and category != "all":
         where.append("c.slug = ?")
         params.append(category)
-    sql = f"{VIDEO_SELECT} WHERE {' AND '.join(where)} ORDER BY v.published_at DESC NULLS LAST, v.id DESC"
+    if sort == "popular":
+        order = "v.view_count DESC, v.id DESC"
+        join = ""
+    elif sort == "trending":
+        # most viewed in the last 7 days
+        order = "COALESCE(w.recent, 0) DESC, v.view_count DESC"
+        join = (" LEFT JOIN (SELECT video_id, COUNT(*) AS recent FROM view_events"
+                " WHERE viewed_at > datetime('now', '-7 days') GROUP BY video_id) w"
+                " ON w.video_id = v.id")
+    else:
+        order = "v.published_at DESC NULLS LAST, v.id DESC"
+        join = ""
+    sql = f"{VIDEO_SELECT}{join} WHERE {' AND '.join(where)} ORDER BY {order}"
     con = db()
     total = con.execute(
         f"SELECT COUNT(*) c FROM videos v LEFT JOIN categories c ON c.id=v.category_id "
@@ -604,8 +618,11 @@ def register_view(video_id: int, request: Request):
     if _view_seen.get(key, 0) > now - VIEW_DEDUP_SECONDS:
         return {"counted": False}
     _view_seen[key] = now
+    ip = request.client.host if request.client else "?"
+    iph = hashlib.sha256(ip.encode()).hexdigest()[:16]
     con = db()
     con.execute("UPDATE videos SET view_count = view_count + 1 WHERE id=?", (video_id,))
+    con.execute("INSERT INTO view_events (video_id, ip_hash) VALUES (?, ?)", (video_id, iph))
     con.commit()
     n = con.execute("SELECT view_count FROM videos WHERE id=?", (video_id,)).fetchone()
     con.close()
@@ -754,6 +771,48 @@ def toggle_like(video_id: int, user: dict = Depends(require_user)):
     return {"liked": liked, "like_count": count}
 
 
+@app.get("/api/videos/{video_id}/comments")
+def list_comments(video_id: int, page: int = 1, per_page: int = 30):
+    per_page = max(1, min(per_page, 50))
+    page = max(1, page)
+    con = db()
+    total = con.execute("SELECT COUNT(*) c FROM comments WHERE video_id=?",
+                        (video_id,)).fetchone()["c"]
+    rows = con.execute(
+        """SELECT c.id, c.body, c.created_at, u.name AS user_name
+           FROM comments c JOIN users u ON u.id = c.user_id
+           WHERE c.video_id=? ORDER BY c.created_at DESC LIMIT ? OFFSET ?""",
+        (video_id, per_page, (page - 1) * per_page)).fetchall()
+    con.close()
+    return {"total": total,
+            "items": [{"id": r["id"], "body": r["body"], "user_name": r["user_name"],
+                       "created_at": r["created_at"]} for r in rows]}
+
+
+@app.post("/api/videos/{video_id}/comments")
+async def add_comment(video_id: int, request: Request,
+                      user: dict = Depends(require_user)):
+    data = await request.json()
+    body = (data.get("body") or "").strip()[:1000]
+    if not body:
+        raise HTTPException(400, "Comment is empty")
+    con = db()
+    if not con.execute("SELECT id FROM videos WHERE id=? AND visibility='published'",
+                       (video_id,)).fetchone():
+        con.close()
+        raise HTTPException(404, "Video not found")
+    cur = con.execute("INSERT INTO comments (video_id, user_id, body) VALUES (?,?,?)",
+                      (video_id, user["id"], body))
+    cid = cur.lastrowid
+    con.commit()
+    r = con.execute(
+        "SELECT c.id, c.body, c.created_at, u.name AS user_name FROM comments c "
+        "JOIN users u ON u.id=c.user_id WHERE c.id=?", (cid,)).fetchone()
+    con.close()
+    return {"id": r["id"], "body": r["body"], "user_name": r["user_name"],
+            "created_at": r["created_at"]}
+
+
 @app.get("/api/likes")
 def my_likes(user: dict = Depends(require_user)):
     con = db()
@@ -889,6 +948,119 @@ def get_history(user: dict = Depends(require_user)):
 
 # ============================================================ admin API
 
+
+@app.get("/api/admin/stats")
+def admin_stats(_: dict = Depends(require_admin)):
+    con = db()
+    totals = {
+        "videos": con.execute("SELECT COUNT(*) c FROM videos").fetchone()["c"],
+        "published": con.execute(
+            "SELECT COUNT(*) c FROM videos WHERE visibility='published'").fetchone()["c"],
+        "views": con.execute(
+            "SELECT COALESCE(SUM(view_count),0) s FROM videos").fetchone()["s"],
+        "likes": con.execute("SELECT COUNT(*) c FROM likes").fetchone()["c"],
+        "users": con.execute("SELECT COUNT(*) c FROM users").fetchone()["c"],
+        "comments": con.execute("SELECT COUNT(*) c FROM comments").fetchone()["c"],
+    }
+    # views per day, last 14 days (fill gaps with 0)
+    days = [(datetime.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d")
+            for i in range(13, -1, -1)]
+    counts = {d: 0 for d in days}
+    for r in con.execute(
+            """SELECT date(viewed_at) d, COUNT(*) c FROM view_events
+               WHERE viewed_at > datetime('now', '-14 days')
+               GROUP BY date(viewed_at)""").fetchall():
+        if r["d"] in counts:
+            counts[r["d"]] = r["c"]
+    views_by_day = [{"day": d, "views": counts[d]} for d in days]
+    top_videos = [{
+        "id": r["id"], "title": r["title"], "view_count": r["view_count"],
+        "thumb_url": f"/api/thumb/{r['id']}" if r["thumb_path"] else None,
+    } for r in con.execute(
+        "SELECT id, title, view_count, thumb_path FROM videos "
+        "ORDER BY view_count DESC LIMIT 5").fetchall()]
+    recent_users = [{
+        "name": r["name"], "email": r["email"], "created_at": r["created_at"],
+    } for r in con.execute(
+        "SELECT name, email, created_at FROM users ORDER BY id DESC LIMIT 5").fetchall()]
+    recent_comments = [{
+        "id": r["id"], "body": r["body"][:120], "user_name": r["user_name"],
+        "video_id": r["video_id"], "video_title": r["video_title"],
+        "created_at": r["created_at"],
+    } for r in con.execute(
+        """SELECT c.id, c.body, c.created_at, u.name AS user_name,
+                  v.id AS video_id, v.title AS video_title
+           FROM comments c JOIN users u ON u.id=c.user_id
+           JOIN videos v ON v.id=c.video_id
+           ORDER BY c.id DESC LIMIT 8""").fetchall()]
+    con.close()
+    return {"totals": totals, "views_by_day": views_by_day,
+            "top_videos": top_videos, "recent_users": recent_users,
+            "recent_comments": recent_comments}
+
+
+@app.post("/api/admin/videos/bulk")
+async def admin_bulk(request: Request, _: dict = Depends(require_admin)):
+    data = await request.json()
+    ids = [int(i) for i in (data.get("ids") or []) if str(i).isdigit()]
+    action = data.get("action")
+    if not ids or action not in ("publish", "unpublish", "delete"):
+        raise HTTPException(400, "Provide ids[] and action=publish|unpublish|delete")
+    con = db()
+    ph = ",".join("?" * len(ids))
+    if action == "delete":
+        con.execute(f"DELETE FROM videos WHERE id IN ({ph})", ids)
+    else:
+        vis = "published" if action == "publish" else "unpublished"
+        con.execute(f"UPDATE videos SET visibility=? WHERE id IN ({ph})", [vis] + ids)
+    con.commit()
+    con.close()
+    return {"ok": True, "action": action, "count": len(ids)}
+
+
+@app.get("/api/admin/comments")
+def admin_comments(page: int = 1, per_page: int = 30,
+                   _: dict = Depends(require_admin)):
+    per_page = max(1, min(per_page, 50))
+    page = max(1, page)
+    con = db()
+    total = con.execute("SELECT COUNT(*) c FROM comments").fetchone()["c"]
+    rows = con.execute(
+        """SELECT c.id, c.body, c.created_at, u.name AS user_name,
+                  v.id AS video_id, v.title AS video_title
+           FROM comments c JOIN users u ON u.id=c.user_id
+           JOIN videos v ON v.id=c.video_id
+           ORDER BY c.id DESC LIMIT ? OFFSET ?""",
+        (per_page, (page - 1) * per_page)).fetchall()
+    con.close()
+    return {"total": total, "items": [dict(r) for r in rows]}
+
+
+@app.delete("/api/admin/comments/{comment_id}")
+def admin_delete_comment(comment_id: int, _: dict = Depends(require_admin)):
+    con = db()
+    con.execute("DELETE FROM comments WHERE id=?", (comment_id,))
+    con.commit()
+    con.close()
+    return {"ok": True}
+
+
+@app.get("/api/admin/users")
+def admin_users(page: int = 1, per_page: int = 30,
+                _: dict = Depends(require_admin)):
+    per_page = max(1, min(per_page, 50))
+    page = max(1, page)
+    con = db()
+    total = con.execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
+    rows = con.execute(
+        """SELECT u.id, u.name, u.email, u.created_at,
+                  (SELECT COUNT(*) FROM likes l WHERE l.user_id=u.id) AS likes,
+                  (SELECT COUNT(*) FROM comments c WHERE c.user_id=u.id) AS comments
+           FROM users u ORDER BY u.id DESC LIMIT ? OFFSET ?""",
+        (per_page, (page - 1) * per_page)).fetchall()
+    con.close()
+    return {"total": total, "items": [dict(r) for r in rows]}
+
 def _resolve_category(value: Optional[str]) -> int:
     con = db()
     if value:
@@ -920,15 +1092,26 @@ async def admin_status(_: None = Depends(require_admin)):
 
 
 @app.get("/api/admin/videos")
-def admin_videos(q: Optional[str] = None, _: None = Depends(require_admin)):
+def admin_videos(q: Optional[str] = None, sort: str = "new",
+                 _: None = Depends(require_admin)):
     con = db()
-    sql = f"{VIDEO_SELECT}"
+    join = ""
     params: list = []
+    where = ""
     if q:
-        sql += " WHERE v.title LIKE ?"
+        where = " WHERE v.title LIKE ?"
         params.append(f"%{q}%")
-    sql += " ORDER BY v.id DESC LIMIT 200"
-    rows = con.execute(sql, params).fetchall()
+    if sort == "popular":
+        order = "v.view_count DESC, v.id DESC"
+    elif sort == "trending":
+        order = "COALESCE(w.recent, 0) DESC, v.view_count DESC"
+        join = (" LEFT JOIN (SELECT video_id, COUNT(*) AS recent FROM view_events"
+                " WHERE viewed_at > datetime('now', '-7 days') GROUP BY video_id) w"
+                " ON w.video_id = v.id")
+    else:
+        order = "v.id DESC"
+    rows = con.execute(f"{VIDEO_SELECT}{join}{where} ORDER BY {order} LIMIT 200",
+                       params).fetchall()
     con.close()
     return [_public_video_row(r) for r in rows]
 

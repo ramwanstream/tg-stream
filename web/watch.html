@@ -5,6 +5,16 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Watch</title>
 <link rel="stylesheet" href="css/style.css">
+<style>
+.comments{margin-top:8px}
+.comment{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid #23232e}
+.comment .av{width:34px;height:34px;border-radius:50%;background:var(--accent);color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;flex-shrink:0;font-size:14px}
+.comment .cb b{font-size:13px}
+.comment .cb small{color:var(--muted);margin-left:6px;font-size:11px}
+.comment .cb p{margin:4px 0 0;font-size:14px;line-height:1.45}
+.cform{display:flex;gap:8px;margin:12px 0}
+.cform input{flex:1;background:var(--bg2);border:1px solid #2a2a38;color:var(--text);border-radius:999px;padding:10px 16px;font-size:14px}
+</style>
 </head>
 <body>
 <header class="top"></header>
@@ -47,6 +57,15 @@ async function load() {
       <button class="btn" id="shareBtn">🔗 Share</button>
     </div>
     ${v.description ? `<div class="desc">${esc(v.description)}</div>` : ""}
+    <div class="section-title">💬 Comments (<span id="ccount">${v.comment_count || 0}</span>)</div>
+    <div class="comments">
+      <div class="cform" id="cform" style="${logged ? "" : "display:none"}">
+        <input id="cinput" placeholder="Add a comment…" maxlength="1000">
+        <button class="btn primary" id="cpost">Post</button>
+      </div>
+      ${logged ? "" : `<p style="color:var(--muted);font-size:13px"><a href="library.html" style="color:var(--accent)">Sign in</a> to comment.</p>`}
+      <div id="clist"></div>
+    </div>
     <div class="section-title">Related</div>
     <div class="grid" id="related"></div>`;
 
@@ -84,6 +103,33 @@ async function load() {
     if (logged) api("/api/history", { method: "POST", body: JSON.stringify({ video_id: v.id, position: 0 }) }).catch(() => {});
     else localStorage.removeItem(resumeKey);
   });
+
+  // comments
+  async function loadComments() {
+    const cl = $("#clist");
+    try {
+      const d = await api(`/api/videos/${v.id}/comments?per_page=20`);
+      $("#ccount").textContent = d.total;
+      cl.innerHTML = d.items.length ? "" : '<p style="color:var(--muted);font-size:13px">No comments yet. Be the first!</p>';
+      d.items.forEach(c => {
+        const div = document.createElement("div");
+        div.className = "comment";
+        div.innerHTML = `<div class="av">${esc((c.user_name || "?")[0].toUpperCase())}</div>
+          <div class="cb"><b>${esc(c.user_name)}</b><small>${timeAgo(c.created_at)}</small><p>${esc(c.body)}</p></div>`;
+        cl.appendChild(div);
+      });
+    } catch (e) { cl.innerHTML = ""; }
+  }
+  loadComments();
+  const cp = $("#cpost");
+  if (cp) cp.onclick = async () => {
+    const inp = $("#cinput"), body = inp.value.trim();
+    if (!body) return;
+    cp.disabled = true;
+    try { await api(`/api/videos/${v.id}/comments`, { method: "POST", body: JSON.stringify({ body }) }); inp.value = ""; loadComments(); }
+    catch (e) { alert(e.message); }
+    cp.disabled = false;
+  };
 
   // like
   $("#likeBtn").onclick = async () => {

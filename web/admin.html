@@ -3,8 +3,36 @@
 <head>
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Admin</title>
+<title>Admin · StreamHub</title>
 <link rel="stylesheet" href="css/style.css">
+<style>
+.tabs{display:flex;gap:6px;overflow-x:auto;padding:4px 0 12px;position:sticky;top:0;background:var(--bg);z-index:5}
+.tab{white-space:nowrap;border:1px solid #2a2a38;background:var(--bg2);color:var(--text);border-radius:999px;padding:8px 16px;font-size:13px;cursor:pointer}
+.tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:12px 0}
+.stat{background:var(--card);border-radius:12px;padding:14px}
+.stat b{font-size:22px;display:block}
+.stat span{font-size:12px;color:var(--muted)}
+.chart{background:var(--card);border-radius:12px;padding:14px;margin:12px 0}
+.chart svg{width:100%;height:120px;display:block}
+.chart .cap{font-size:12px;color:var(--muted);margin-top:6px}
+.panel{background:var(--card);border-radius:12px;padding:14px;margin:12px 0}
+.panel h3{margin:0 0 10px;font-size:15px}
+.kv{display:flex;justify-content:space-between;font-size:13px;padding:6px 0;border-bottom:1px solid #23232e;gap:8px}
+.kv:last-child{border-bottom:0}
+.kv small{color:var(--muted)}
+table.tbl{width:100%;border-collapse:collapse;font-size:13px}
+.tbl th{text-align:left;color:var(--muted);font-weight:600;padding:8px 6px;border-bottom:1px solid #2a2a38;white-space:nowrap}
+.tbl td{padding:8px 6px;border-bottom:1px solid #23232e;vertical-align:middle}
+.tbl tr:last-child td{border-bottom:0}
+.thumb-sm{width:96px;aspect-ratio:16/9;object-fit:cover;border-radius:8px;background:#1a1a24;flex-shrink:0}
+.bulkbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0;padding:10px;background:var(--bg2);border-radius:10px;font-size:13px}
+select,input[type=text],input[type=search]{background:var(--bg2);border:1px solid #2a2a38;color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px}
+.btn.sm{padding:6px 12px;font-size:12px}
+.pill{font-size:11px;padding:3px 10px;border-radius:999px;background:#2a2a38;white-space:nowrap}
+.pill.pub{background:#123f2a;color:#4ade80}
+.pill.unpub{background:#3f2a12;color:#fbbf24}
+</style>
 </head>
 <body>
 <header class="top"></header>
@@ -26,6 +54,7 @@ renderHeader("");
 renderFooter();
 const content = $("#content");
 let token = sessionStorage.getItem("admin_token") || "";
+let tab = "dash";
 
 if (!token) {
   content.innerHTML = `
@@ -53,39 +82,191 @@ async function aapi(path, opts = {}) {
   return data;
 }
 
+function tabs() {
+  const t = [["dash","📊 Dashboard"],["videos","🎬 Videos"],["comments","💬 Comments"],["users","👥 Users"],["setup","⚙️ Setup"]];
+  return `<div class="tabs">${t.map(([k,l]) => `<button class="tab${tab===k?" active":""}" data-tab="${k}">${l}</button>`).join("")}</div>`;
+}
+function bindTabs() {
+  content.querySelectorAll(".tab").forEach(b => b.onclick = () => { tab = b.dataset.tab; boot(); });
+}
+
 async function boot() {
-  content.innerHTML = `
-    <div class="section-title">Dashboard</div>
-    <div class="stat-grid" id="stats"></div>
-    <div id="setup"></div>
-    <div style="display:flex;gap:8px;margin:16px 0;flex-wrap:wrap">
+  content.innerHTML = tabs() + `<div id="pane"></div>`;
+  bindTabs();
+  const pane = $("#pane");
+  if (tab === "dash") return paneDash(pane);
+  if (tab === "videos") return paneVideos(pane);
+  if (tab === "comments") return paneComments(pane);
+  if (tab === "users") return paneUsers(pane);
+  return paneSetup(pane);
+}
+
+/* ---------------- Dashboard ---------------- */
+function barChart(days) {
+  const W = 560, H = 120, max = Math.max(1, ...days.map(d => d.views));
+  const bw = W / days.length;
+  let s = `<svg viewBox="0 0 ${W} ${H}" preserveAspectRatio="none">`;
+  days.forEach((d, i) => {
+    const h = Math.max(2, (d.views / max) * (H - 24));
+    const x = i * bw + 2, y = H - h;
+    s += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(bw - 4).toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="#7c5cff" opacity="${d.views ? 0.9 : 0.25}"><title>${d.day}: ${d.views} views</title></rect>`;
+  });
+  return s + "</svg>";
+}
+
+async function paneDash(pane) {
+  pane.innerHTML = "<p>Loading…</p>";
+  let st;
+  try { st = await aapi("/api/admin/stats"); }
+  catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  const t = st.totals;
+  pane.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat"><b>${t.videos}</b><span>🎬 Videos</span></div>
+      <div class="stat"><b>${fmtViews(t.views)}</b><span>👁️ Total views</span></div>
+      <div class="stat"><b>${t.likes}</b><span>❤️ Likes</span></div>
+      <div class="stat"><b>${t.comments}</b><span>💬 Comments</span></div>
+      <div class="stat"><b>${t.users}</b><span>👥 Users</span></div>
+      <div class="stat"><b>${t.published}/${t.videos}</b><span>📢 Published</span></div>
+    </div>
+    <div class="chart"><h3 style="margin:0 0 8px;font-size:15px">Views — last 14 days</h3>
+      ${barChart(st.views_by_day)}
+      <div class="cap">${st.views_by_day[0].day} → ${st.views_by_day[13].day}</div></div>
+    <div class="panel"><h3>🔥 Top videos</h3>
+      ${st.top_videos.map(v => `<div class="kv"><span>${v.thumb_url ? `<img src="${esc(v.thumb_url)}" class="thumb-sm" style="width:72px;vertical-align:middle;margin-right:8px">` : ""}${esc(v.title)}</span><b>${fmtViews(v.view_count)}</b></div>`).join("") || "<small>No videos yet.</small>"}
+    </div>
+    <div class="panel"><h3>💬 Latest comments</h3>
+      ${st.recent_comments.map(c => `<div class="kv"><span><b>${esc(c.user_name)}</b> on ${esc(c.video_title)}<br><small>${esc(c.body)}</small></span><small>${esc((c.created_at||"").slice(0,16).replace("T"," "))}</small></div>`).join("") || "<small>No comments yet.</small>"}
+    </div>
+    <div class="panel"><h3>👥 Newest users</h3>
+      ${st.recent_users.map(u => `<div class="kv"><span>${esc(u.name)}<br><small>${esc(u.email)}</small></span><small>${esc((u.created_at||"").slice(0,10))}</small></div>`).join("") || "<small>No users yet.</small>"}
+    </div>`;
+}
+
+/* ---------------- Videos ---------------- */
+let vsel = new Set(), vq = "", vsort = "new";
+async function paneVideos(pane) {
+  pane.innerHTML = `
+    <div style="display:flex;gap:8px;margin:4px 0 12px;flex-wrap:wrap">
       <button class="btn primary" id="syncBtn">🔄 Sync channel now</button>
-      <input id="mq" type="search" placeholder="Search videos…" style="flex:1;min-width:160px;background:var(--bg2);border:1px solid #2a2a38;color:var(--text);border-radius:999px;padding:9px 14px">
+      <input id="mq" type="search" placeholder="Search videos…" value="${esc(vq)}" style="flex:1;min-width:140px">
+      <select id="vsort">
+        <option value="new"${vsort==="new"?" selected":""}>Newest</option>
+        <option value="popular"${vsort==="popular"?" selected":""}>Most viewed</option>
+        <option value="trending"${vsort==="trending"?" selected":""}>Trending 7d</option>
+      </select>
+    </div>
+    <div class="bulkbar" id="bulkbar" style="display:none">
+      <b id="selCount">0 selected</b>
+      <button class="btn sm" data-b="publish">Publish</button>
+      <button class="btn sm" data-b="unpublish">Unpublish</button>
+      <button class="btn sm danger" data-b="delete">Delete</button>
+      <button class="btn sm" id="selClear">Clear</button>
     </div>
     <div id="vlist"></div>`;
-  await refreshStatus();
-  await loadVideos("");
-  let deb;
-  $("#mq").addEventListener("input", e => { clearTimeout(deb); deb = setTimeout(() => loadVideos(e.target.value), 400); });
   $("#syncBtn").onclick = async () => {
     $("#syncBtn").disabled = true; $("#syncBtn").textContent = "Syncing…";
     try { const r = await aapi("/api/admin/sync", { method: "POST", body: "{}" }); alert(`Sync done: ${r.added} new, ${r.skipped} already listed.`); }
     catch (e) { alert(e.message); }
     $("#syncBtn").disabled = false; $("#syncBtn").textContent = "🔄 Sync channel now";
-    refreshStatus(); loadVideos($("#mq").value);
+    loadVideos();
   };
+  let deb;
+  $("#mq").addEventListener("input", e => { clearTimeout(deb); deb = setTimeout(() => { vq = e.target.value; loadVideos(); }, 400); });
+  $("#vsort").onchange = e => { vsort = e.target.value; loadVideos(); };
+  $("#selClear").onclick = () => { vsel.clear(); loadVideos(); };
+  pane.querySelectorAll("[data-b]").forEach(b => b.onclick = () => bulk(b.dataset.b));
+  loadVideos();
+}
+async function bulk(action) {
+  if (!vsel.size) return;
+  if (action === "delete" && !confirm(`Delete ${vsel.size} video(s) from the website?\n\nFiles in Telegram stay untouched.`)) return;
+  await aapi("/api/admin/videos/bulk", { method: "POST", body: JSON.stringify({ ids: [...vsel], action }) });
+  vsel.clear(); loadVideos();
+}
+async function loadVideos() {
+  const box = $("#vlist"); if (!box) return;
+  box.innerHTML = "<p>Loading…</p>";
+  const qs = `?q=${encodeURIComponent(vq)}&sort=${vsort}`;
+  let items;
+  try { items = await aapi("/api/admin/videos" + qs); }
+  catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  if (!items.length) { box.innerHTML = '<p style="color:var(--muted)">No videos. Press “Sync channel now” after linking the channel.</p>'; return; }
+  const bb = $("#bulkbar");
+  bb.style.display = vsel.size ? "flex" : "none";
+  const sc = $("#selCount"); if (sc) sc.textContent = `${vsel.size} selected`;
+  box.innerHTML = "";
+  const tbl = document.createElement("table"); tbl.className = "tbl";
+  tbl.innerHTML = `<tr><th><input type="checkbox" id="selAll"></th><th></th><th>Title</th><th>Views</th><th>Status</th><th></th></tr>`;
+  items.forEach(v => {
+    const tr = document.createElement("tr");
+    tr.innerHTML = `
+      <td><input type="checkbox" data-id="${v.id}"${vsel.has(v.id) ? " checked" : ""}></td>
+      <td>${v.thumb_url ? `<img src="${esc(v.thumb_url)}" class="thumb-sm" loading="lazy">` : `<div class="thumb-sm"></div>`}</td>
+      <td><b>${esc(v.title)}</b><br><small style="color:var(--muted)">${esc(v.category || "")} · ${fmtDur(v.duration)} · ${fmtSize(v.file_size)}</small></td>
+      <td><b>${fmtViews(v.view_count)}</b><br><small style="color:var(--muted)">❤️${v.like_count || 0} 💬${v.comment_count || 0}</small></td>
+      <td><span class="pill ${v.visibility === "published" ? "pub" : "unpub"}">${v.visibility}</span><br><small style="color:var(--muted)">${v.status}</small></td>
+      <td style="white-space:nowrap">
+        <button class="btn sm" data-act="toggle">${v.visibility === "published" ? "Unpublish" : "Publish"}</button>
+        <button class="btn sm" data-act="edit">Edit</button>
+        <button class="btn sm danger" data-act="del">✕</button>
+      </td>`;
+    tr.querySelector("[data-id]").onchange = e => { e.target.checked ? vsel.add(v.id) : vsel.delete(v.id); loadVideos(); };
+    const acts = tr.querySelectorAll("[data-act]");
+    acts[0].onclick = async () => { await aapi(`/api/admin/videos/${v.id}`, { method: "PATCH", body: JSON.stringify({ visibility: v.visibility === "published" ? "unpublished" : "published" }) }); loadVideos(); };
+    acts[1].onclick = () => openEdit(v);
+    acts[2].onclick = async () => { if (!confirm(`Remove "${v.title}" from the website?\n\nThe file in your Telegram channel stays untouched.`)) return; await aapi(`/api/admin/videos/${v.id}`, { method: "DELETE" }); loadVideos(); };
+    tbl.appendChild(tr);
+  });
+  box.appendChild(tbl);
+  const sa = $("#selAll");
+  if (sa) sa.onchange = e => { items.forEach(v => e.target.checked ? vsel.add(v.id) : vsel.delete(v.id)); loadVideos(); };
 }
 
-async function refreshStatus() {
+/* ---------------- Comments ---------------- */
+async function paneComments(pane) {
+  pane.innerHTML = "<p>Loading…</p>";
+  let d;
+  try { d = await aapi("/api/admin/comments?per_page=50"); }
+  catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  pane.innerHTML = `<div class="panel"><h3>💬 All comments (${d.total})</h3>
+    ${d.items.map(c => `<div class="kv"><span><b>${esc(c.user_name)}</b> on <i>${esc(c.video_title)}</i><br>${esc(c.body)}<br><small>${esc((c.created_at || "").slice(0, 16).replace("T", " "))}</small></span>
+    <button class="btn sm danger" data-del="${c.id}">Delete</button></div>`).join("") || "<small>No comments yet.</small>"}</div>`;
+  pane.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+    if (!confirm("Delete this comment?")) return;
+    await aapi(`/api/admin/comments/${b.dataset.del}`, { method: "DELETE" });
+    paneComments(pane);
+  });
+}
+
+/* ---------------- Users ---------------- */
+async function paneUsers(pane) {
+  pane.innerHTML = "<p>Loading…</p>";
+  let d;
+  try { d = await aapi("/api/admin/users?per_page=50"); }
+  catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  pane.innerHTML = `<div class="panel"><h3>👥 Users (${d.total})</h3><div style="overflow-x:auto"><table class="tbl">
+    <tr><th>Name</th><th>Email</th><th>Joined</th><th>❤️</th><th>💬</th></tr>
+    ${d.items.map(u => `<tr><td><b>${esc(u.name)}</b></td><td>${esc(u.email)}</td><td>${esc((u.created_at || "").slice(0, 10))}</td><td>${u.likes}</td><td>${u.comments}</td></tr>`).join("")}
+    </table></div></div>`;
+}
+
+/* ---------------- Setup (Telegram/channel) ---------------- */
+async function paneSetup(pane) {
   let st;
   try { st = await aapi("/api/admin/status"); }
-  catch (e) { $("#stats").innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
-  $("#stats").innerHTML = `
-    <div class="stat"><b>${st.connected ? "🟢" : "🔴"}</b><span>Telegram ${st.configured ? (st.connected ? "connected (" + esc(st.account || "") + ")" : "not connected") : "not configured"}</span></div>
-    <div class="stat"><b>${st.channel_id ? "📺" : "—"}</b><span>${st.channel_id ? "Channel linked" : "Channel not set"}</span></div>
-    <div class="stat"><b>${st.videos_published}</b><span>Videos published</span></div>
-    <div class="stat"><b>${st.users_total}</b><span>Registered users</span></div>`;
-  const setup = $("#setup");
+  catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  pane.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat"><b>${st.connected ? "🟢" : "🔴"}</b><span>Telegram ${st.configured ? (st.connected ? "connected (" + esc(st.account || "") + ")" : "not connected") : "not configured"}</span></div>
+      <div class="stat"><b>${st.channel_id ? "📺" : "—"}</b><span>${st.channel_id ? "Channel linked" : "Channel not set"}</span></div>
+      <div class="stat"><b>${st.videos_published}</b><span>Videos published</span></div>
+      <div class="stat"><b>${st.users_total}</b><span>Registered users</span></div>
+    </div>
+    <div id="setup"></div>
+    ${st.last_sync ? `<p style="color:var(--muted);font-size:12px">Last sync: ${esc(st.last_sync)}</p>` : ""}
+    ${st.last_error ? `<p class="error">Last sync note: ${esc(st.last_error)}</p>` : ""}`;
+  const setup = pane.querySelector("#setup");
   if (!st.configured || !st.connected || !st.channel_id) {
     setup.innerHTML = `
       <div class="step ${st.configured ? "done" : ""}" id="s1">
@@ -117,7 +298,7 @@ async function refreshStatus() {
         </div><div class="error" id="e3"></div>
       </div>`;
     $("#bSaveTg").onclick = async () => {
-      try { await aapi("/api/admin/tg-config", { method: "POST", body: JSON.stringify({ api_id: $("#inApiId").value, api_hash: $("#inApiHash").value }) }); $("#s1").classList.add("done"); $("#e1").textContent = ""; refreshStatus(); }
+      try { await aapi("/api/admin/tg-config", { method: "POST", body: JSON.stringify({ api_id: $("#inApiId").value, api_hash: $("#inApiHash").value }) }); paneSetup(pane); }
       catch (e) { $("#e1").textContent = e.message; }
     };
     $("#bSendCode").onclick = async () => {
@@ -129,54 +310,26 @@ async function refreshStatus() {
         const r = await aapi("/api/admin/tg-verify", { method: "POST", body: JSON.stringify({ code: $("#inCode").value, password: $("#inPass").value }) });
         if (r.need_password) { $("#e2").textContent = "This account has 2FA — enter the password and press Verify again."; return; }
         $("#o2").textContent = "Logged in as " + r.account + ". Now link the channel below."; $("#e2").textContent = "";
-        refreshStatus();
+        paneSetup(pane);
       } catch (e) { $("#e2").textContent = e.message; }
     };
     $("#bChannel").onclick = async () => {
-      try { const r = await aapi("/api/admin/channel", { method: "POST", body: JSON.stringify({ channel: $("#inChannel").value }) }); alert("Channel linked: " + (r.title || r.channel_id)); refreshStatus(); boot(); }
+      try { const r = await aapi("/api/admin/channel", { method: "POST", body: JSON.stringify({ channel: $("#inChannel").value }) }); alert("Channel linked: " + (r.title || r.channel_id)); paneSetup(pane); }
       catch (e) { $("#e3").textContent = e.message; }
     };
   } else {
-    setup.innerHTML = st.last_error ? `<p class="error">Last sync note: ${esc(st.last_error)}</p>` : "";
+    setup.innerHTML = `<div class="panel"><h3>✅ All connected</h3>
+      <div class="kv"><span>Telegram account</span><b>${esc(st.account || "")}</b></div>
+      <div class="kv"><span>Channel</span><b>${esc(st.channel_id || "")}</b></div>
+      <div style="margin-top:10px"><button class="btn primary" id="syncBtn2">🔄 Sync channel now</button></div></div>`;
+    $("#syncBtn2").onclick = async () => {
+      try { const r = await aapi("/api/admin/sync", { method: "POST", body: "{}" }); alert(`Sync done: ${r.added} new, ${r.skipped} already listed.`); paneSetup(pane); }
+      catch (e) { alert(e.message); }
+    };
   }
 }
 
-async function loadVideos(q) {
-  const box = $("#vlist");
-  box.innerHTML = "";
-  const qs = q ? "?q=" + encodeURIComponent(q) : "";
-  let items;
-  try { items = await aapi("/api/admin/videos" + qs); }
-  catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
-  if (!items.length) { box.innerHTML = '<p style="color:var(--muted)">No videos. Press “Sync channel now” after linking the channel.</p>'; return; }
-  items.forEach(v => {
-    const row = document.createElement("div");
-    row.className = "admin-row";
-    row.innerHTML = `
-      ${v.thumb_url ? `<img src="${esc(v.thumb_url)}" alt="">` : `<div style="width:120px;aspect-ratio:16/9;background:var(--card);border-radius:8px;flex-shrink:0"></div>`}
-      <div class="grow"><b>${esc(v.title)}</b>
-        <small>${fmtViews(v.view_count)} · ${esc(v.category || "")} · ${v.visibility} · ${v.status}</small></div>
-      <div class="row-actions">
-        <button class="btn" data-act="toggle">${v.visibility === "published" ? "Unpublish" : "Publish"}</button>
-        <button class="btn" data-act="edit">Edit</button>
-        <button class="btn danger" data-act="del">Delete</button>
-      </div>`;
-    const [btnT, btnE, btnD] = row.querySelectorAll("button");
-    btnT.onclick = async () => {
-      await aapi(`/api/admin/videos/${v.id}`, { method: "PATCH",
-        body: JSON.stringify({ visibility: v.visibility === "published" ? "unpublished" : "published" }) });
-      loadVideos($("#mq").value);
-    };
-    btnE.onclick = () => openEdit(v);
-    btnD.onclick = async () => {
-      if (!confirm(`Remove "${v.title}" from the website?\n\nThe file in your Telegram channel stays untouched.`)) return;
-      await aapi(`/api/admin/videos/${v.id}`, { method: "DELETE" });
-      loadVideos($("#mq").value); refreshStatus();
-    };
-    box.appendChild(row);
-  });
-}
-
+/* ---------------- edit dialog ---------------- */
 let editingId = null;
 function openEdit(v) {
   editingId = v.id;
@@ -190,7 +343,7 @@ $("#eSave").onclick = async () => {
   await aapi(`/api/admin/videos/${editingId}`, { method: "PATCH", body: JSON.stringify({
     title: $("#eTitle").value, description: $("#eDesc").value, category: $("#eCat").value }) });
   $("#editDlg").close();
-  loadVideos($("#mq").value);
+  if (tab === "videos") paneVideos($("#pane"));
 };
 </script>
 </body>

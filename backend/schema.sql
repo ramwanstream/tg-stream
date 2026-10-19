@@ -73,3 +73,23 @@ CREATE TABLE IF NOT EXISTS watch_history (
 );
 
 INSERT OR IGNORE INTO categories (name, slug) VALUES ('Uncategorized', 'uncategorized');
+
+-- v2: per-view event log (powers the admin views chart + trending)
+CREATE TABLE IF NOT EXISTS view_events (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+  viewed_at TEXT NOT NULL DEFAULT (datetime('now')),
+  ip_hash TEXT NOT NULL DEFAULT ''
+);
+CREATE INDEX IF NOT EXISTS idx_view_events_video_time ON view_events(video_id, viewed_at);
+CREATE INDEX IF NOT EXISTS idx_view_events_time ON view_events(viewed_at);
+
+-- v2: comments
+CREATE TABLE IF NOT EXISTS comments (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  body TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_comments_video ON comments(video_id, created_at DESC);

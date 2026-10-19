@@ -5,10 +5,32 @@
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>StreamHub</title>
 <link rel="stylesheet" href="css/style.css">
+<style>
+.hero{position:relative;border-radius:16px;overflow:hidden;margin:14px 0 6px;min-height:200px;background:var(--card);display:block;color:inherit;text-decoration:none}
+.hero img{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
+.hero .grad{position:absolute;inset:0;background:linear-gradient(180deg,transparent 20%,rgba(0,0,0,.85))}
+.hero .txt{position:absolute;left:0;right:0;bottom:0;padding:18px}
+.hero .kicker{font-size:11px;letter-spacing:2px;color:#c4b5fd;text-transform:uppercase}
+.hero h2{margin:6px 0;font-size:20px}
+.hero .meta{font-size:12px;color:#c9c9d4}
+.row-scroll{display:flex;gap:12px;overflow-x:auto;padding:4px 2px 12px;scroll-snap-type:x mandatory}
+.row-scroll .card{min-width:220px;max-width:220px;scroll-snap-align:start}
+.sorttabs{display:flex;gap:6px;margin:10px 0}
+.sorttab{border:1px solid #2a2a38;background:var(--bg2);color:var(--text);border-radius:999px;padding:7px 14px;font-size:12px;cursor:pointer}
+.sorttab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+</style>
 </head>
 <body>
 <header class="top"></header>
 <div class="wrap">
+  <div id="hero"></div>
+  <div class="section-title" id="trendTitle" style="display:none">🔥 Trending this week</div>
+  <div class="row-scroll" id="trendRow" style="display:none"></div>
+  <div class="sorttabs" id="sorttabs">
+    <button class="sorttab active" data-s="new">Latest</button>
+    <button class="sorttab" data-s="popular">Most viewed</button>
+    <button class="sorttab" data-s="trending">Trending</button>
+  </div>
   <div class="chips" id="chips"></div>
   <div class="grid" id="grid"></div>
   <button class="btn loadmore" id="moreBtn" style="display:none">Load more</button>
@@ -21,8 +43,39 @@ renderFooter();
 const params = new URLSearchParams(location.search);
 let q = params.get("q") || "";
 let category = "all";
+let sort = "new";
 let page = 1;
 const grid = $("#grid"), moreBtn = $("#moreBtn");
+
+async function loadHero() {
+  if (q || category !== "all" || sort !== "new" || page !== 1) { $("#hero").innerHTML = ""; return; }
+  try {
+    const d = await api("/api/videos?page=1&per_page=1");
+    const v = d.items[0];
+    if (!v) return;
+    $("#hero").innerHTML = `
+      <a class="hero" href="watch.html?v=${v.id}">
+        ${v.thumb_url ? `<img src="${esc(v.thumb_url)}" alt="">` : ""}
+        <div class="grad"></div>
+        <div class="txt">
+          <div class="kicker">✨ Featured</div>
+          <h2>${esc(v.title)}</h2>
+          <div class="meta">${fmtViews(v.view_count)} · ${timeAgo(v.published_at)}${v.duration ? " · " + fmtDur(v.duration) : ""}</div>
+        </div>
+      </a>`;
+  } catch (e) {}
+}
+
+async function loadTrending() {
+  const row = $("#trendRow"), title = $("#trendTitle");
+  if (q || category !== "all") { row.style.display = "none"; title.style.display = "none"; return; }
+  try {
+    const d = await api("/api/videos?sort=trending&per_page=8");
+    if (!d.items.length) return;
+    row.innerHTML = ""; title.style.display = ""; row.style.display = "";
+    d.items.forEach(v => row.appendChild(videoCard(v)));
+  } catch (e) {}
+}
 
 async function loadCats() {
   try {
@@ -32,17 +85,25 @@ async function loadCats() {
     const all = document.createElement("button");
     all.className = "chip" + (category === "all" ? " active" : "");
     all.textContent = "All";
-    all.onclick = () => { category = "all"; page = 1; grid.innerHTML = ""; load(); loadCats(); };
+    all.onclick = () => { category = "all"; reset(); };
     chips.appendChild(all);
     cats.filter(c => c.count > 0).forEach(c => {
       const b = document.createElement("button");
       b.className = "chip" + (category === c.slug ? " active" : "");
       b.textContent = c.name;
-      b.onclick = () => { category = c.slug; page = 1; grid.innerHTML = ""; load(); loadCats(); };
+      b.onclick = () => { category = c.slug; reset(); };
       chips.appendChild(b);
     });
   } catch (e) { /* categories optional */ }
 }
+
+function reset() { page = 1; grid.innerHTML = ""; load(); loadCats(); loadHero(); }
+
+$$("#sorttabs .sorttab").forEach(b => b.onclick = () => {
+  $$("#sorttabs .sorttab").forEach(x => x.classList.remove("active"));
+  b.classList.add("active");
+  sort = b.dataset.s; reset();
+});
 
 async function load() {
   moreBtn.style.display = "none";
@@ -50,7 +111,7 @@ async function load() {
     grid.innerHTML = Array(6).fill('<div><div class="thumb skel"></div><div class="skel" style="height:14px;margin-top:8px"></div></div>').join("");
   }
   try {
-    const qs = new URLSearchParams({ page, per_page: 24 });
+    const qs = new URLSearchParams({ page, per_page: 24, sort });
     if (q) qs.set("q", q);
     if (category !== "all") qs.set("category", category);
     const data = await api("/api/videos?" + qs);
@@ -67,8 +128,7 @@ async function load() {
   }
 }
 moreBtn.onclick = () => { page++; load(); };
-loadCats();
-load();
+loadCats(); load(); loadHero(); loadTrending();
 </script>
 </body>
 </html>
