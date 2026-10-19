@@ -1,0 +1,74 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>StreamHub</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="top"></header>
+<div class="wrap">
+  <div class="chips" id="chips"></div>
+  <div class="grid" id="grid"></div>
+  <button class="btn loadmore" id="moreBtn" style="display:none">Load more</button>
+</div>
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+<script>
+renderHeader("home");
+renderFooter();
+const params = new URLSearchParams(location.search);
+let q = params.get("q") || "";
+let category = "all";
+let page = 1;
+const grid = $("#grid"), moreBtn = $("#moreBtn");
+
+async function loadCats() {
+  try {
+    const cats = await api("/api/categories");
+    const chips = $("#chips");
+    chips.innerHTML = "";
+    const all = document.createElement("button");
+    all.className = "chip" + (category === "all" ? " active" : "");
+    all.textContent = "All";
+    all.onclick = () => { category = "all"; page = 1; grid.innerHTML = ""; load(); loadCats(); };
+    chips.appendChild(all);
+    cats.filter(c => c.count > 0).forEach(c => {
+      const b = document.createElement("button");
+      b.className = "chip" + (category === c.slug ? " active" : "");
+      b.textContent = c.name;
+      b.onclick = () => { category = c.slug; page = 1; grid.innerHTML = ""; load(); loadCats(); };
+      chips.appendChild(b);
+    });
+  } catch (e) { /* categories optional */ }
+}
+
+async function load() {
+  moreBtn.style.display = "none";
+  if (page === 1) {
+    grid.innerHTML = Array(6).fill('<div><div class="thumb skel"></div><div class="skel" style="height:14px;margin-top:8px"></div></div>').join("");
+  }
+  try {
+    const qs = new URLSearchParams({ page, per_page: 24 });
+    if (q) qs.set("q", q);
+    if (category !== "all") qs.set("category", category);
+    const data = await api("/api/videos?" + qs);
+    if (page === 1) grid.innerHTML = "";
+    if (!data.items.length && page === 1) {
+      showEmpty(grid, "🎬", q ? "No results" : "No videos yet",
+        q ? `Nothing found for "${q}".` : "Videos from the channel will appear here automatically.");
+      return;
+    }
+    data.items.forEach(v => grid.appendChild(videoCard(v)));
+    if (data.total > page * data.per_page) { moreBtn.style.display = "block"; }
+  } catch (e) {
+    if (page === 1) showEmpty(grid, "⚠️", "Could not load videos", e.message);
+  }
+}
+moreBtn.onclick = () => { page++; load(); };
+loadCats();
+load();
+</script>
+</body>
+</html>

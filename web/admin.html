@@ -1,0 +1,197 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Admin</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="top"></header>
+<div class="wrap" id="content"></div>
+<dialog id="editDlg">
+  <h3 style="margin-top:0">Edit video</h3>
+  <div class="field"><label>Title</label><input id="eTitle"></div>
+  <div class="field"><label>Description</label><textarea id="eDesc" rows="4"></textarea></div>
+  <div class="field"><label>Category</label><input id="eCat" placeholder="e.g. Travel"></div>
+  <div style="display:flex;gap:8px;justify-content:flex-end;margin-top:10px">
+    <button class="btn" id="eCancel">Cancel</button>
+    <button class="btn primary" id="eSave">Save</button>
+  </div>
+</dialog>
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+<script>
+renderHeader("");
+renderFooter();
+const content = $("#content");
+let token = sessionStorage.getItem("admin_token") || "";
+
+if (!token) {
+  content.innerHTML = `
+    <div class="form-card">
+      <h2>Admin login</h2>
+      <p style="color:var(--muted);font-size:13px">Enter the admin token from the server
+      (the <code>ADMIN_TOKEN</code> shown when the backend first started).</p>
+      <div class="field"><label>Admin token</label><input id="aToken" type="password"></div>
+      <div class="error" id="aErr"></div>
+      <button class="btn primary" id="aGo" style="width:100%;justify-content:center">Open admin</button>
+    </div>`;
+  $("#aGo").onclick = async () => {
+    token = $("#aToken").value.trim();
+    try { await aapi("/api/admin/status"); sessionStorage.setItem("admin_token", token); boot(); }
+    catch (e) { $("#aErr").textContent = "Wrong token."; token = ""; }
+  };
+} else boot();
+
+async function aapi(path, opts = {}) {
+  const headers = { "Content-Type": "application/json", "X-Admin-Token": token, ...((opts.headers) || {}) };
+  const res = await fetch(API + path, { ...opts, headers });
+  let data = null;
+  try { data = await res.json(); } catch (e) {}
+  if (!res.ok) throw new Error((data && (data.detail || data.message)) || `Failed (${res.status})`);
+  return data;
+}
+
+async function boot() {
+  content.innerHTML = `
+    <div class="section-title">Dashboard</div>
+    <div class="stat-grid" id="stats"></div>
+    <div id="setup"></div>
+    <div style="display:flex;gap:8px;margin:16px 0;flex-wrap:wrap">
+      <button class="btn primary" id="syncBtn">🔄 Sync channel now</button>
+      <input id="mq" type="search" placeholder="Search videos…" style="flex:1;min-width:160px;background:var(--bg2);border:1px solid #2a2a38;color:var(--text);border-radius:999px;padding:9px 14px">
+    </div>
+    <div id="vlist"></div>`;
+  await refreshStatus();
+  await loadVideos("");
+  let deb;
+  $("#mq").addEventListener("input", e => { clearTimeout(deb); deb = setTimeout(() => loadVideos(e.target.value), 400); });
+  $("#syncBtn").onclick = async () => {
+    $("#syncBtn").disabled = true; $("#syncBtn").textContent = "Syncing…";
+    try { const r = await aapi("/api/admin/sync", { method: "POST", body: "{}" }); alert(`Sync done: ${r.added} new, ${r.skipped} already listed.`); }
+    catch (e) { alert(e.message); }
+    $("#syncBtn").disabled = false; $("#syncBtn").textContent = "🔄 Sync channel now";
+    refreshStatus(); loadVideos($("#mq").value);
+  };
+}
+
+async function refreshStatus() {
+  let st;
+  try { st = await aapi("/api/admin/status"); }
+  catch (e) { $("#stats").innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  $("#stats").innerHTML = `
+    <div class="stat"><b>${st.connected ? "🟢" : "🔴"}</b><span>Telegram ${st.configured ? (st.connected ? "connected (" + esc(st.account || "") + ")" : "not connected") : "not configured"}</span></div>
+    <div class="stat"><b>${st.channel_id ? "📺" : "—"}</b><span>${st.channel_id ? "Channel linked" : "Channel not set"}</span></div>
+    <div class="stat"><b>${st.videos_published}</b><span>Videos published</span></div>
+    <div class="stat"><b>${st.users_total}</b><span>Registered users</span></div>`;
+  const setup = $("#setup");
+  if (!st.configured || !st.connected || !st.channel_id) {
+    setup.innerHTML = `
+      <div class="step ${st.configured ? "done" : ""}" id="s1">
+        <h3>Step 1 — Telegram API credentials</h3>
+        <p>Get <b>api_id</b> and <b>api_hash</b> once from <b>my.telegram.org</b> (login → API development tools → create app). They stay on the server only.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input id="inApiId" placeholder="api_id" inputmode="numeric" style="flex:1;min-width:120px;background:var(--bg);border:1px solid #2a2a38;color:var(--text);border-radius:10px;padding:10px">
+          <input id="inApiHash" placeholder="api_hash" style="flex:2;min-width:160px;background:var(--bg);border:1px solid #2a2a38;color:var(--text);border-radius:10px;padding:10px">
+          <button class="btn primary" id="bSaveTg">Save</button>
+        </div><div class="error" id="e1"></div>
+      </div>
+      <div class="step" id="s2">
+        <h3>Step 2 — Log in the Telegram account</h3>
+        <p>Use your <b>secondary</b> Telegram account (never the main one). Enter phone with country code, then the code Telegram sends to that account's app.</p>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <input id="inPhone" placeholder="+91…" style="flex:1;min-width:140px;background:var(--bg);border:1px solid #2a2a38;color:var(--text);border-radius:10px;padding:10px">
+          <button class="btn" id="bSendCode">Send code</button>
+          <input id="inCode" placeholder="code" inputmode="numeric" style="flex:1;min-width:100px;background:var(--bg);border:1px solid #2a2a38;color:var(--text);border-radius:10px;padding:10px">
+          <input id="inPass" placeholder="2FA password (if any)" type="password" style="flex:1;min-width:140px;background:var(--bg);border:1px solid #2a2a38;color:var(--text);border-radius:10px;padding:10px">
+          <button class="btn primary" id="bVerify">Verify</button>
+        </div><div class="error" id="e2"></div><div class="ok" id="o2"></div>
+      </div>
+      <div class="step" id="s3">
+        <h3>Step 3 — Link the private channel</h3>
+        <p>Create a <b>private</b> channel in the secondary account's Telegram app. <b>Everything you put in that channel becomes public on the website</b> — keep it dedicated. Then paste its username (e.g. @mychannel), invite link, or numeric ID.</p>
+        <div style="display:flex;gap:8px">
+          <input id="inChannel" placeholder="@mychannel or invite link" style="flex:1;background:var(--bg);border:1px solid #2a2a38;color:var(--text);border-radius:10px;padding:10px">
+          <button class="btn primary" id="bChannel">Link</button>
+        </div><div class="error" id="e3"></div>
+      </div>`;
+    $("#bSaveTg").onclick = async () => {
+      try { await aapi("/api/admin/tg-config", { method: "POST", body: JSON.stringify({ api_id: $("#inApiId").value, api_hash: $("#inApiHash").value }) }); $("#s1").classList.add("done"); $("#e1").textContent = ""; refreshStatus(); }
+      catch (e) { $("#e1").textContent = e.message; }
+    };
+    $("#bSendCode").onclick = async () => {
+      try { await aapi("/api/admin/tg-send-code", { method: "POST", body: JSON.stringify({ phone: $("#inPhone").value }) }); $("#o2").textContent = "Code sent — check the Telegram app on that account."; $("#e2").textContent = ""; }
+      catch (e) { $("#e2").textContent = e.message; }
+    };
+    $("#bVerify").onclick = async () => {
+      try {
+        const r = await aapi("/api/admin/tg-verify", { method: "POST", body: JSON.stringify({ code: $("#inCode").value, password: $("#inPass").value }) });
+        if (r.need_password) { $("#e2").textContent = "This account has 2FA — enter the password and press Verify again."; return; }
+        $("#o2").textContent = "Logged in as " + r.account + ". Now link the channel below."; $("#e2").textContent = "";
+        refreshStatus();
+      } catch (e) { $("#e2").textContent = e.message; }
+    };
+    $("#bChannel").onclick = async () => {
+      try { const r = await aapi("/api/admin/channel", { method: "POST", body: JSON.stringify({ channel: $("#inChannel").value }) }); alert("Channel linked: " + (r.title || r.channel_id)); refreshStatus(); boot(); }
+      catch (e) { $("#e3").textContent = e.message; }
+    };
+  } else {
+    setup.innerHTML = st.last_error ? `<p class="error">Last sync note: ${esc(st.last_error)}</p>` : "";
+  }
+}
+
+async function loadVideos(q) {
+  const box = $("#vlist");
+  box.innerHTML = "";
+  const qs = q ? "?q=" + encodeURIComponent(q) : "";
+  let items;
+  try { items = await aapi("/api/admin/videos" + qs); }
+  catch (e) { box.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  if (!items.length) { box.innerHTML = '<p style="color:var(--muted)">No videos. Press “Sync channel now” after linking the channel.</p>'; return; }
+  items.forEach(v => {
+    const row = document.createElement("div");
+    row.className = "admin-row";
+    row.innerHTML = `
+      ${v.thumb_url ? `<img src="${esc(v.thumb_url)}" alt="">` : `<div style="width:120px;aspect-ratio:16/9;background:var(--card);border-radius:8px;flex-shrink:0"></div>`}
+      <div class="grow"><b>${esc(v.title)}</b>
+        <small>${fmtViews(v.view_count)} · ${esc(v.category || "")} · ${v.visibility} · ${v.status}</small></div>
+      <div class="row-actions">
+        <button class="btn" data-act="toggle">${v.visibility === "published" ? "Unpublish" : "Publish"}</button>
+        <button class="btn" data-act="edit">Edit</button>
+        <button class="btn danger" data-act="del">Delete</button>
+      </div>`;
+    const [btnT, btnE, btnD] = row.querySelectorAll("button");
+    btnT.onclick = async () => {
+      await aapi(`/api/admin/videos/${v.id}`, { method: "PATCH",
+        body: JSON.stringify({ visibility: v.visibility === "published" ? "unpublished" : "published" }) });
+      loadVideos($("#mq").value);
+    };
+    btnE.onclick = () => openEdit(v);
+    btnD.onclick = async () => {
+      if (!confirm(`Remove "${v.title}" from the website?\n\nThe file in your Telegram channel stays untouched.`)) return;
+      await aapi(`/api/admin/videos/${v.id}`, { method: "DELETE" });
+      loadVideos($("#mq").value); refreshStatus();
+    };
+    box.appendChild(row);
+  });
+}
+
+let editingId = null;
+function openEdit(v) {
+  editingId = v.id;
+  $("#eTitle").value = v.title;
+  $("#eDesc").value = v.description || "";
+  $("#eCat").value = v.category || "";
+  $("#editDlg").showModal();
+}
+$("#eCancel").onclick = () => $("#editDlg").close();
+$("#eSave").onclick = async () => {
+  await aapi(`/api/admin/videos/${editingId}`, { method: "PATCH", body: JSON.stringify({
+    title: $("#eTitle").value, description: $("#eDesc").value, category: $("#eCat").value }) });
+  $("#editDlg").close();
+  loadVideos($("#mq").value);
+};
+</script>
+</body>
+</html>

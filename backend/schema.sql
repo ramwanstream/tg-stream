@@ -1,0 +1,75 @@
+-- TG Stream database schema (SQLite for PoC; same tables map 1:1 to Postgres later)
+PRAGMA journal_mode=WAL;
+
+CREATE TABLE IF NOT EXISTS users (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL,
+  email TEXT NOT NULL UNIQUE,
+  password_hash TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS categories (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  name TEXT NOT NULL UNIQUE,
+  slug TEXT NOT NULL UNIQUE
+);
+
+CREATE TABLE IF NOT EXISTS videos (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  category_id INTEGER REFERENCES categories(id),
+  -- Telegram reference (stable identity of the source file)
+  tg_channel_id INTEGER,
+  tg_message_id INTEGER,
+  tg_file_unique_id TEXT UNIQUE,
+  -- Local test mode only (never used in production)
+  local_path TEXT,
+  file_size INTEGER NOT NULL DEFAULT 0,
+  duration INTEGER NOT NULL DEFAULT 0,
+  mime TEXT NOT NULL DEFAULT 'video/mp4',
+  thumb_path TEXT,
+  visibility TEXT NOT NULL DEFAULT 'published' CHECK (visibility IN ('published','unpublished')),
+  status TEXT NOT NULL DEFAULT 'ready' CHECK (status IN ('ready','unavailable','error')),
+  last_error TEXT,
+  view_count INTEGER NOT NULL DEFAULT 0,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  published_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_videos_visibility ON videos(visibility, published_at DESC);
+CREATE INDEX IF NOT EXISTS idx_videos_category ON videos(category_id);
+CREATE INDEX IF NOT EXISTS idx_videos_search ON videos(title, description);
+
+CREATE TABLE IF NOT EXISTS likes (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+  created_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, video_id)
+);
+
+CREATE TABLE IF NOT EXISTS playlists (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+
+CREATE TABLE IF NOT EXISTS playlist_items (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  playlist_id INTEGER NOT NULL REFERENCES playlists(id) ON DELETE CASCADE,
+  video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0,
+  added_at TEXT NOT NULL DEFAULT (datetime('now')),
+  UNIQUE (playlist_id, video_id)
+);
+
+CREATE TABLE IF NOT EXISTS watch_history (
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+  position INTEGER NOT NULL DEFAULT 0,
+  updated_at TEXT NOT NULL DEFAULT (datetime('now')),
+  PRIMARY KEY (user_id, video_id)
+);
+
+INSERT OR IGNORE INTO categories (name, slug) VALUES ('Uncategorized', 'uncategorized');

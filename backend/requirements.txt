@@ -1,0 +1,7 @@
+fastapi
+uvicorn[standard]
+telethon
+python-socks
+pyjwt
+aiosqlite
+python-multipart

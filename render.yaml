@@ -1,0 +1,21 @@
+# Render Blueprint — one-click deploy of the whole site (API + frontend).
+# In Render: New -> Blueprint -> connect your GitHub repo containing this file.
+# Then set TG_API_ID / TG_API_HASH in the dashboard (from my.telegram.org).
+services:
+  - type: web
+    name: tg-stream
+    runtime: python
+    rootDir: backend
+    buildCommand: pip install -r requirements.txt
+    startCommand: uvicorn app:app --host 0.0.0.0 --port $PORT
+    envVars:
+      - key: ADMIN_TOKEN
+        generateValue: true
+      - key: TG_API_ID
+        sync: false
+      - key: TG_API_HASH
+        sync: false
+    # NOTE (free tier): no persistent disk, so SQLite + the Telegram session
+    # reset on every redeploy. The channel is the source of truth, so videos
+    # come back with one "Sync channel now" press; user accounts would need
+    # Postgres (paid tier) to survive redeploys.

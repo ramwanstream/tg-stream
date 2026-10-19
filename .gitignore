@@ -1,0 +1,4 @@
+data/
+backend/venv/
+**/__pycache__/
+.secrets/

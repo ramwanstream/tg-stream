@@ -1,0 +1,124 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Library</title>
+<link rel="stylesheet" href="css/style.css">
+</head>
+<body>
+<header class="top"></header>
+<div class="wrap" id="content"></div>
+<script src="js/config.js"></script>
+<script src="js/app.js"></script>
+<script>
+renderHeader("library");
+renderFooter();
+const content = $("#content");
+const logged = !!localStorage.getItem("token");
+
+if (!logged) renderAuth();
+else renderLibrary();
+
+function renderAuth() {
+  content.innerHTML = `
+    <div class="form-card">
+      <div class="tabs">
+        <button class="btn primary" id="tabLogin">Sign in</button>
+        <button class="btn" id="tabSignup">Create account</button>
+      </div>
+      <div id="loginForm">
+        <h2>Welcome back</h2>
+        <div class="field"><label>Email</label><input id="lEmail" type="email" autocomplete="email"></div>
+        <div class="field"><label>Password</label><input id="lPass" type="password" autocomplete="current-password"></div>
+        <div class="error" id="lErr"></div>
+        <button class="btn primary" id="loginBtn" style="width:100%;justify-content:center">Sign in</button>
+      </div>
+      <div id="signupForm" style="display:none">
+        <h2>Create account</h2>
+        <div class="field"><label>Name</label><input id="sName" type="text" autocomplete="name"></div>
+        <div class="field"><label>Email</label><input id="sEmail" type="email" autocomplete="email"></div>
+        <div class="field"><label>Password (6+ characters)</label><input id="sPass" type="password" autocomplete="new-password"></div>
+        <div class="error" id="sErr"></div>
+        <button class="btn primary" id="signupBtn" style="width:100%;justify-content:center">Create account</button>
+      </div>
+    </div>`;
+  $("#tabLogin").onclick = () => { $("#loginForm").style.display = ""; $("#signupForm").style.display = "none"; };
+  $("#tabSignup").onclick = () => { $("#signupForm").style.display = ""; $("#loginForm").style.display = "none"; };
+  const done = d => {
+    localStorage.setItem("token", d.token);
+    localStorage.setItem("name", d.user.name);
+    location.reload();
+  };
+  $("#loginBtn").onclick = async () => {
+    try { done(await api("/api/auth/login", { method: "POST", body: JSON.stringify({ email: $("#lEmail").value, password: $("#lPass").value }) })); }
+    catch (e) { $("#lErr").textContent = e.message; }
+  };
+  $("#signupBtn").onclick = async () => {
+    try { done(await api("/api/auth/signup", { method: "POST", body: JSON.stringify({ name: $("#sName").value, email: $("#sEmail").value, password: $("#sPass").value }) })); }
+    catch (e) { $("#sErr").textContent = e.message; }
+  };
+}
+
+async function renderLibrary() {
+  content.innerHTML = `
+    <div class="section-title">Continue watching</div><div class="grid" id="hist"></div>
+    <div class="section-title">My playlists <button class="btn" id="newPl" style="margin-left:8px">+ New</button></div>
+    <div id="playlists"></div>
+    <div class="section-title">Liked videos</div><div class="grid" id="liked"></div>`;
+  try {
+    const h = await api("/api/history");
+    const hist = $("#hist");
+    if (!h.length) hist.innerHTML = '<p style="color:var(--muted)">Nothing here yet — watch something first.</p>';
+    h.forEach(v => hist.appendChild(videoCard(v)));
+  } catch (e) {}
+  try {
+    const liked = await api("/api/likes");
+    const el = $("#liked");
+    if (!liked.length) el.innerHTML = '<p style="color:var(--muted)">Tap 👍 on any video to save it here.</p>';
+    liked.forEach(v => el.appendChild(videoCard(v)));
+  } catch (e) {}
+  await loadPlaylists();
+  $("#newPl").onclick = async () => {
+    const t = prompt("Playlist name:");
+    if (!t) return;
+    await api("/api/playlists", { method: "POST", body: JSON.stringify({ title: t }) });
+    loadPlaylists();
+  };
+}
+
+async function loadPlaylists() {
+  const box = $("#playlists");
+  box.innerHTML = "";
+  const pls = await api("/api/playlists");
+  if (!pls.length) { box.innerHTML = '<p style="color:var(--muted)">No playlists yet.</p>'; return; }
+  for (const p of pls) {
+    const d = await api("/api/playlists/" + p.id);
+    const div = document.createElement("div");
+    div.innerHTML = `<h3 style="margin:14px 0 4px">${esc(p.title)}
+      <button class="btn danger" data-del="${p.id}" style="margin-left:8px;padding:4px 12px;font-size:12px">Delete</button></h3>`;
+    const g = document.createElement("div");
+    g.className = "grid";
+    if (!d.items.length) g.innerHTML = '<p style="color:var(--muted)">Empty.</p>';
+    d.items.forEach(v => {
+      const c = videoCard(v);
+      const rm = document.createElement("button");
+      rm.className = "btn"; rm.style.cssText = "margin:6px 0 0;font-size:12px;padding:4px 10px";
+      rm.textContent = "Remove";
+      rm.onclick = async ev => { ev.preventDefault(); await api(`/api/playlists/${p.id}/items/${v.id}`, { method: "DELETE" }); loadPlaylists(); };
+      const wrap = document.createElement("div");
+      wrap.appendChild(c); wrap.appendChild(rm);
+      g.appendChild(wrap);
+    });
+    div.appendChild(g);
+    box.appendChild(div);
+  }
+  $$("[data-del]", box).forEach(b => b.onclick = async () => {
+    if (!confirm("Delete this playlist?")) return;
+    await api("/api/playlists/" + b.dataset.del, { method: "DELETE" });
+    loadPlaylists();
+  });
+}
+</script>
+</body>
+</html>
