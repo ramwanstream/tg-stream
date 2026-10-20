@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Admin · StreamHub</title>
-<link rel="stylesheet" href="css/style.css?v=11">
+<link rel="stylesheet" href="css/style.css?v=12">
 <style>
 .tabs{display:flex;gap:6px;overflow-x:auto;padding:4px 0 12px;position:sticky;top:0;background:var(--bg);z-index:5}
 .tab{white-space:nowrap;border:1px solid #2a2a38;background:var(--bg2);color:var(--text);border-radius:999px;padding:8px 16px;font-size:13px;cursor:pointer}
@@ -48,8 +48,8 @@ select,input[type=text],input[type=search]{background:var(--bg2);border:1px soli
     <button class="btn primary" id="eSave">Save</button>
   </div>
 </dialog>
-<script src="js/config.js?v=11"></script>
-<script src="js/app.js?v=11"></script>
+<script src="js/config.js?v=12"></script>
+<script src="js/app.js?v=12"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -84,7 +84,7 @@ async function aapi(path, opts = {}) {
 }
 
 function tabs() {
-  const t = [["dash","📊 Dashboard"],["review","📥 Review"],["videos","🎬 Videos"],["comments","💬 Comments"],["users","👥 Users"],["settings","🎛️ Settings"],["activity","🛡️ Activity"],["setup","⚙️ Setup"]];
+  const t = [["dash","📊 Dashboard"],["review","📥 Review"],["reports","🚩 Reports"],["videos","🎬 Videos"],["comments","💬 Comments"],["users","👥 Users"],["settings","🎛️ Settings"],["activity","🛡️ Activity"],["setup","⚙️ Setup"]];
   return `<div class="tabs">${t.map(([k,l]) => `<button class="tab${tab===k?" active":""}" data-tab="${k}">${l}</button>`).join("")}</div>`;
 }
 function bindTabs() {
@@ -98,6 +98,7 @@ async function boot() {
   if (tab === "dash") return paneDash(pane);
   if (tab === "videos") return paneVideos(pane);
   if (tab === "review") return paneReview(pane);
+  if (tab === "reports") return paneReports(pane);
   if (tab === "comments") return paneComments(pane);
   if (tab === "users") return paneUsers(pane);
   if (tab === "settings") return paneSettings(pane);
@@ -145,6 +146,36 @@ async function paneDash(pane) {
     <div class="panel"><h3>👥 Newest users</h3>
       ${st.recent_users.map(u => `<div class="kv"><span>${esc(u.name)}<br><small>${esc(u.email)}</small></span><small>${esc((u.created_at||"").slice(0,10))}</small></div>`).join("") || "<small>No users yet.</small>"}
     </div>`;
+}
+
+/* ---------------- Reports ---------------- */
+async function paneReports(pane) {
+  pane.innerHTML = "<p>Loading…</p>";
+  let d;
+  try { d = await aapi("/api/admin/reports"); }
+  catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  pane.innerHTML = `<div class="panel"><h3>🚩 Open reports (${d.items.length})</h3>
+    ${d.items.length ? "" : '<p style="color:var(--muted)">No open reports. 🎉</p>'}
+    ${d.items.map(r => `<div class="admin-row">
+      <div style="font-size:20px">${r.comment_id ? "💬" : "🎬"}</div>
+      <div class="grow"><b>${esc(r.comment_id ? "Comment on: " + (r.video_title || "") : (r.video_title || "Video"))}</b>
+        ${r.comment_body ? `<br><small>“${esc(r.comment_body.slice(0, 120))}”</small>` : ""}
+        <br><small>reported by ${esc(r.reporter || "?")} · ${esc((r.created_at || "").slice(0, 16))}${r.reason ? " · reason: " + esc(r.reason) : ""}</small></div>
+      <div class="row-actions">
+        ${r.video_id ? `<a class="btn" href="watch.html?v=${r.video_id}" target="_blank">View</a>` : ""}
+        ${r.comment_id ? `<button class="btn danger" data-delc="${r.comment_id}">Delete comment</button>` : ""}
+        <button class="btn" data-dismiss="${r.id}">Dismiss</button>
+      </div></div>`).join("")}
+    </div>`;
+  pane.querySelectorAll("[data-dismiss]").forEach(b => b.onclick = async () => {
+    await aapi("/api/admin/reports/" + b.dataset.dismiss, { method: "PATCH", body: JSON.stringify({ status: "dismissed" }) });
+    paneReports(pane);
+  });
+  pane.querySelectorAll("[data-delc]").forEach(b => b.onclick = async () => {
+    if (!confirm("Delete this comment?")) return;
+    await aapi("/api/admin/comments/" + b.dataset.delc, { method: "DELETE" });
+    paneReports(pane);
+  });
 }
 
 /* ---------------- Review (user upload moderation) ---------------- */
@@ -305,6 +336,7 @@ async function paneUsers(pane) {
       <td style="white-space:nowrap">
         <button class="btn" data-ban="${u.id}" data-cur="${u.banned ? 1 : 0}" style="padding:5px 10px;font-size:12px">${u.banned ? "Unban" : "Ban"}</button>
         <button class="btn" data-role="${u.id}" data-cur="${u.role}" style="padding:5px 10px;font-size:12px">${u.role === "admin" ? "Make user" : "Make admin"}</button>
+        <button class="btn" data-pw="${u.id}" style="padding:5px 10px;font-size:12px">Reset PW</button>
       </td></tr>`).join("")}
     </table></div></div>`;
   pane.querySelectorAll("[data-ban]").forEach(b => b.onclick = async () => {
@@ -317,6 +349,12 @@ async function paneUsers(pane) {
     const role = b.dataset.cur === "admin" ? "user" : "admin";
     await aapi("/api/admin/users/" + b.dataset.role, { method: "PATCH", body: JSON.stringify({ role }) });
     paneUsers(pane);
+  });
+  pane.querySelectorAll("[data-pw]").forEach(b => b.onclick = async () => {
+    const pw = prompt("New password for this user (6+ characters):");
+    if (!pw) return;
+    try { await aapi("/api/admin/users/" + b.dataset.pw, { method: "PATCH", body: JSON.stringify({ password: pw }) }); alert("Password reset done."); }
+    catch (e) { alert(e.message); }
   });
 }
 

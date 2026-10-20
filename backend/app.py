@@ -137,6 +137,10 @@ def init_db():
         con.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
     if "banned" not in ucols:
         con.execute("ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0")
+    # v8: comment replies
+    ccols = [r["name"] for r in con.execute("PRAGMA table_info(comments)")]
+    if "parent_id" not in ccols:
+        con.execute("ALTER TABLE comments ADD COLUMN parent_id INTEGER")
     con.commit()
     con.close()
 
@@ -965,45 +969,116 @@ def toggle_like(video_id: int, user: dict = Depends(require_user)):
 
 
 @app.get("/api/videos/{video_id}/comments")
-def list_comments(video_id: int, page: int = 1, per_page: int = 30):
+def list_comments(video_id: int, page: int = 1, per_page: int = 30,
+                user: Optional[dict] = Depends(optional_user)):
+    """Threaded comments: top-level newest-first, replies oldest-first."""
     per_page = max(1, min(per_page, 50))
     page = max(1, page)
     con = db()
     total = con.execute("SELECT COUNT(*) c FROM comments WHERE video_id=?",
                         (video_id,)).fetchone()["c"]
-    rows = con.execute(
-        """SELECT c.id, c.body, c.created_at, u.name AS user_name
+    tops = con.execute(
+        """SELECT c.id, c.body, c.created_at, c.user_id, u.name AS user_name
            FROM comments c JOIN users u ON u.id = c.user_id
-           WHERE c.video_id=? ORDER BY c.created_at DESC LIMIT ? OFFSET ?""",
+           WHERE c.video_id=? AND c.parent_id IS NULL
+           ORDER BY c.created_at DESC LIMIT ? OFFSET ?""",
         (video_id, per_page, (page - 1) * per_page)).fetchall()
+    items = []
+    for r in tops:
+        reps = con.execute(
+            """SELECT c.id, c.body, c.created_at, c.user_id, u.name AS user_name
+               FROM comments c JOIN users u ON u.id = c.user_id
+               WHERE c.parent_id=? ORDER BY c.created_at ASC""",
+            (r["id"],)).fetchall()
+        def fmt(x):
+            return {"id": x["id"], "body": x["body"], "user_name": x["user_name"],
+                    "user_id": x["user_id"], "created_at": x["created_at"],
+                    "mine": bool(user and x["user_id"] == user["id"])}
+        item = fmt(r)
+        item["replies"] = [fmt(x) for x in reps]
+        items.append(item)
     con.close()
-    return {"total": total,
-            "items": [{"id": r["id"], "body": r["body"], "user_name": r["user_name"],
-                       "created_at": r["created_at"]} for r in rows]}
+    return {"total": total, "items": items}
 
 
 @app.post("/api/videos/{video_id}/comments")
 async def add_comment(video_id: int, request: Request,
                       user: dict = Depends(require_user)):
+    if not rate_limit(f"comment:{user['id']}", 20, 600):
+        raise HTTPException(429, "You are commenting too fast")
     data = await request.json()
     body = (data.get("body") or "").strip()[:1000]
     if not body:
         raise HTTPException(400, "Comment is empty")
+    parent_id = data.get("parent_id")
     con = db()
     if not con.execute("SELECT id FROM videos WHERE id=? AND visibility='published'",
                        (video_id,)).fetchone():
         con.close()
         raise HTTPException(404, "Video not found")
-    cur = con.execute("INSERT INTO comments (video_id, user_id, body) VALUES (?,?,?)",
-                      (video_id, user["id"], body))
+    if parent_id is not None:
+        parent = con.execute("SELECT id, parent_id FROM comments WHERE id=? AND video_id=?",
+                             (parent_id, video_id)).fetchone()
+        if not parent:
+            con.close()
+            raise HTTPException(400, "Parent comment not found")
+        # one level of nesting only: replies attach to the top-level comment
+        if parent["parent_id"]:
+            parent_id = parent["parent_id"]
+    cur = con.execute("INSERT INTO comments (video_id, user_id, body, parent_id) VALUES (?,?,?,?)",
+                      (video_id, user["id"], body, parent_id))
     cid = cur.lastrowid
     con.commit()
     r = con.execute(
-        "SELECT c.id, c.body, c.created_at, u.name AS user_name FROM comments c "
-        "JOIN users u ON u.id=c.user_id WHERE c.id=?", (cid,)).fetchone()
+        "SELECT c.id, c.body, c.created_at, c.parent_id, c.user_id, u.name AS user_name "
+        "FROM comments c JOIN users u ON u.id=c.user_id WHERE c.id=?", (cid,)).fetchone()
     con.close()
     return {"id": r["id"], "body": r["body"], "user_name": r["user_name"],
-            "created_at": r["created_at"]}
+            "user_id": r["user_id"], "parent_id": r["parent_id"],
+            "created_at": r["created_at"], "mine": True}
+
+
+@app.delete("/api/comments/{comment_id}")
+def delete_my_comment(comment_id: int, user: dict = Depends(require_user)):
+    """Delete your own comment (and its replies)."""
+    con = db()
+    c = con.execute("SELECT user_id FROM comments WHERE id=?", (comment_id,)).fetchone()
+    if not c:
+        con.close()
+        raise HTTPException(404, "Comment not found")
+    if c["user_id"] != user["id"]:
+        con.close()
+        raise HTTPException(403, "You can only delete your own comments")
+    con.execute("DELETE FROM comments WHERE parent_id=?", (comment_id,))
+    con.execute("DELETE FROM comments WHERE id=?", (comment_id,))
+    con.commit()
+    con.close()
+    return {"ok": True}
+
+
+@app.post("/api/reports")
+async def create_report(request: Request, user: dict = Depends(require_user)):
+    """Flag a video or a comment for the admin."""
+    if not rate_limit(f"report:{user['id']}", 10, 3600):
+        raise HTTPException(429, "Too many reports")
+    data = await request.json()
+    video_id = data.get("video_id")
+    comment_id = data.get("comment_id")
+    reason = (data.get("reason") or "").strip()[:300]
+    if not video_id and not comment_id:
+        raise HTTPException(400, "Nothing to report")
+    con = db()
+    if comment_id:
+        cm = con.execute("SELECT video_id FROM comments WHERE id=?", (comment_id,)).fetchone()
+        if not cm:
+            con.close()
+            raise HTTPException(404, "Comment not found")
+        video_id = cm["video_id"]
+    con.execute("INSERT INTO reports (reporter_id, video_id, comment_id, reason) VALUES (?,?,?,?)",
+                (user["id"], video_id, comment_id, reason))
+    con.commit()
+    con.close()
+    return {"ok": True, "message": "Reported. The admin will review it."}
 
 
 @app.get("/api/likes")
@@ -1431,7 +1506,42 @@ async def admin_user_update(user_id: int, request: Request, _: None = Depends(re
     if "role" in data and data["role"] in ("user", "admin"):
         con.execute("UPDATE users SET role=? WHERE id=?", (data["role"], user_id))
         log_activity("user_role", f"user:{user_id}", f"role -> {data['role']}")
+    if data.get("password"):
+        pw = str(data["password"])
+        if len(pw) < 6:
+            con.close()
+            raise HTTPException(400, "Password must be 6+ characters")
+        con.execute("UPDATE users SET password_hash=? WHERE id=?",
+                    (hash_password(pw), user_id))
+        log_activity("user_pw_reset", f"user:{user_id}", f"{u['name']} <{u['email']}>")
     con.commit()
+    con.close()
+    return {"ok": True}
+
+
+@app.get("/api/admin/reports")
+def admin_reports(_: None = Depends(require_admin)):
+    """Open reports queue (videos + comments flagged by users)."""
+    con = db()
+    rows = con.execute(
+        """SELECT r.id, r.reason, r.created_at, r.video_id, r.comment_id,
+                  u.name AS reporter, v.title AS video_title, cm.body AS comment_body
+           FROM reports r
+           LEFT JOIN users u ON u.id=r.reporter_id
+           LEFT JOIN videos v ON v.id=r.video_id
+           LEFT JOIN comments cm ON cm.id=r.comment_id
+           WHERE r.status='open' ORDER BY r.id DESC LIMIT 100""").fetchall()
+    con.close()
+    return {"items": [row_to_dict(r) for r in rows]}
+
+
+@app.patch("/api/admin/reports/{report_id}")
+async def admin_report_update(report_id: int, request: Request, _: None = Depends(require_admin)):
+    data = await request.json()
+    con = db()
+    if data.get("status") == "dismissed":
+        con.execute("UPDATE reports SET status='dismissed' WHERE id=?", (report_id,))
+        con.commit()
     con.close()
     return {"ok": True}
 

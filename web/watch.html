@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Watch</title>
-<link rel="stylesheet" href="css/style.css?v=10">
+<link rel="stylesheet" href="css/style.css?v=12">
 <style>
 .comments{margin-top:8px}
 .comment{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid #23232e}
@@ -12,6 +12,14 @@
 .comment .cb b{font-size:13px}
 .comment .cb small{color:var(--muted);margin-left:6px;font-size:11px}
 .comment .cb p{margin:4px 0 0;font-size:14px;line-height:1.45}
+.comment.reply{margin-left:44px;border-bottom:1px solid #1b1b26}
+.comment.reply .av{width:28px;height:28px;font-size:12px}
+.cacts{display:flex;gap:14px;margin-top:6px}
+.cacts button{background:none;border:0;color:var(--muted);font-size:12px;cursor:pointer;padding:2px 0;font-weight:600}
+.cacts button:hover{color:var(--text)}
+.rform{display:flex;gap:8px;margin-top:8px}
+.rform input{flex:1;background:var(--bg2);border:1px solid #2a2a38;color:var(--text);border-radius:999px;padding:8px 14px;font-size:13px}
+.rform .btn{padding:7px 14px;font-size:13px}
 .cform{display:flex;gap:8px;margin:12px 0}
 .cform input{flex:1;background:var(--bg2);border:1px solid #2a2a38;color:var(--text);border-radius:999px;padding:10px 16px;font-size:14px}
 </style>
@@ -19,9 +27,9 @@
 <body>
 <header class="top"></header>
 <div class="wrap" id="content"></div>
-<script src="js/config.js?v=10"></script>
-<script src="js/app.js?v=10"></script>
-<script src="js/ads.js?v=10"></script>
+<script src="js/config.js?v=12"></script>
+<script src="js/app.js?v=12"></script>
+<script src="js/ads.js?v=12"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -58,6 +66,7 @@ async function load() {
       <button class="btn" id="likeBtn">${v.liked ? "👍 Liked" : "👍 Like"} · <span id="likeCount">${v.like_count}</span></button>
       <button class="btn" id="plBtn">➕ Save</button>
       <button class="btn" id="shareBtn">🔗 Share</button>
+      <button class="btn" id="reportBtn">🚩 Report</button>
     </div>
     <div class="adslot" data-ad="watch_top"></div>
     ${v.description ? `<div class="desc">${esc(v.description)}</div>` : ""}
@@ -110,19 +119,56 @@ async function load() {
     else localStorage.removeItem(resumeKey);
   });
 
-  // comments
+  // comments (threaded, with replies)
+  function commentNode(c, isReply) {
+    const div = document.createElement("div");
+    div.className = "comment" + (isReply ? " reply" : "");
+    div.innerHTML = `<div class="av">${esc((c.user_name || "?")[0].toUpperCase())}</div>
+      <div class="cb"><b>${esc(c.user_name)}</b><small>${timeAgo(c.created_at)}</small><p>${esc(c.body)}</p>
+      <div class="cacts">
+        ${logged && !isReply ? `<button data-reply="${c.id}">↩ Reply</button>` : ""}
+        ${logged && !c.mine ? `<button data-report="${c.id}">🚩 Report</button>` : ""}
+        ${c.mine ? `<button data-del="${c.id}">🗑 Delete</button>` : ""}
+      </div>
+      <div class="rform" id="rf_${c.id}" style="display:none">
+        <input placeholder="Write a reply…" maxlength="1000">
+        <button class="btn primary" data-send="${c.id}">Reply</button>
+      </div></div>`;
+    return div;
+  }
   async function loadComments() {
     const cl = $("#clist");
     try {
-      const d = await api(`/api/videos/${v.id}/comments?per_page=20`);
+      const d = await api(`/api/videos/${v.id}/comments?per_page=30`);
       $("#ccount").textContent = d.total;
       cl.innerHTML = d.items.length ? "" : '<p style="color:var(--muted);font-size:13px">No comments yet. Be the first!</p>';
       d.items.forEach(c => {
-        const div = document.createElement("div");
-        div.className = "comment";
-        div.innerHTML = `<div class="av">${esc((c.user_name || "?")[0].toUpperCase())}</div>
-          <div class="cb"><b>${esc(c.user_name)}</b><small>${timeAgo(c.created_at)}</small><p>${esc(c.body)}</p></div>`;
-        cl.appendChild(div);
+        cl.appendChild(commentNode(c, false));
+        (c.replies || []).forEach(r => cl.appendChild(commentNode(r, true)));
+      });
+      cl.querySelectorAll("[data-reply]").forEach(b => b.onclick = () => {
+        const f = $("#rf_" + b.dataset.reply);
+        f.style.display = f.style.display === "none" ? "flex" : "none";
+        const inp = f.querySelector("input"); if (inp) inp.focus();
+      });
+      cl.querySelectorAll("[data-send]").forEach(b => b.onclick = async () => {
+        const f = $("#rf_" + b.dataset.send), inp = f.querySelector("input");
+        const body = inp.value.trim(); if (!body) return;
+        b.disabled = true;
+        try { await api(`/api/videos/${v.id}/comments`, { method: "POST", body: JSON.stringify({ body, parent_id: +b.dataset.send }) }); loadComments(); }
+        catch (e) { alert(e.message); }
+        b.disabled = false;
+      });
+      cl.querySelectorAll("[data-del]").forEach(b => b.onclick = async () => {
+        if (!confirm("Delete this comment?")) return;
+        try { await api("/api/comments/" + b.dataset.del, { method: "DELETE" }); loadComments(); }
+        catch (e) { alert(e.message); }
+      });
+      cl.querySelectorAll("[data-report]").forEach(b => b.onclick = async () => {
+        const reason = prompt("Why are you reporting this comment? (optional)") ;
+        if (reason === null) return;
+        try { await api("/api/reports", { method: "POST", body: JSON.stringify({ comment_id: +b.dataset.report, reason }) }); alert("Reported. Thank you."); }
+        catch (e) { alert(e.message); }
       });
     } catch (e) { cl.innerHTML = ""; }
   }
@@ -150,6 +196,13 @@ async function load() {
   // share
   $("#shareBtn").onclick = async () => {
     const url = location.href;
+  $("#reportBtn").onclick = async () => {
+    if (!logged) { alert("Sign in to report."); return; }
+    const reason = prompt("Why are you reporting this video? (optional)");
+    if (reason === null) return;
+    try { await api("/api/reports", { method: "POST", body: JSON.stringify({ video_id: v.id, reason }) }); alert("Reported. The admin will review it."); }
+    catch (e) { alert(e.message); }
+  };
     try { await navigator.clipboard.writeText(url); alert("Link copied!"); }
     catch (e) { prompt("Copy this link:", url); }
   };
