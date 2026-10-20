@@ -60,7 +60,7 @@ header.top {
   background: var(--card) linear-gradient(135deg, #23232f, #191922);
   overflow: hidden;
 }
-.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; }
+.thumb img { width: 100%; height: 100%; object-fit: cover; display: block; position: relative; z-index: 1; }
 /* pretty placeholder when a video has no thumbnail (or it fails to load) */
 .thumb-ph {
   position: absolute; inset: 0; display: flex; align-items: center; justify-content: center;
@@ -73,7 +73,7 @@ header.top {
 }
 .badge-dur {
   position: absolute; right: 8px; bottom: 8px; background: rgba(0,0,0,.8);
-  font-size: 12px; padding: 2px 7px; border-radius: 6px;
+  font-size: 12px; padding: 2px 7px; border-radius: 6px; z-index: 2;
 }
 .card h3 { margin: 10px 0 4px; font-size: 15px; font-weight: 600; }
 .card .meta { color: var(--muted); font-size: 13px; }
