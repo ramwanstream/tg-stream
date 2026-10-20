@@ -11,6 +11,7 @@
   --radius: 12px;
 }
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+html, body { overflow-x: clip; }
 body {
   margin: 0; background: var(--bg); color: var(--text);
   font-family: system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
@@ -75,13 +76,13 @@ header.top {
   position: absolute; right: 8px; bottom: 8px; background: rgba(0,0,0,.8);
   font-size: 12px; padding: 2px 7px; border-radius: 6px; z-index: 2;
 }
-.card h3 { margin: 10px 0 4px; font-size: 15px; font-weight: 600; }
+.card h3 { margin: 10px 0 4px; font-size: 15px; font-weight: 600; overflow-wrap: anywhere; word-break: break-word; }
 .card .meta { color: var(--muted); font-size: 13px; }
 
 /* watch page */
 .player-wrap { background: #000; border-radius: var(--radius); overflow: hidden; margin-top: 14px; }
 video.player { width: 100%; aspect-ratio: 16/9; display: block; background: #000; }
-.watch-title { font-size: 19px; margin: 14px 0 6px; }
+.watch-title { font-size: 19px; margin: 14px 0 6px; overflow-wrap: anywhere; word-break: break-word; }
 .watch-meta { color: var(--muted); font-size: 13px; margin-bottom: 10px; }
 .actions { display: flex; gap: 10px; flex-wrap: wrap; margin: 10px 0 16px; }
 .btn {
