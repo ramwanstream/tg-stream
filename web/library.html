@@ -4,15 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Library</title>
-<link rel="stylesheet" href="css/style.css?v=8">
+<link rel="stylesheet" href="css/style.css?v=9">
 </head>
 <body>
 <header class="top"></header>
 <div class="wrap" id="content"></div>
 <div class="wrap"><div class="adslot" data-ad="library_top"></div></div>
-<script src="js/config.js?v=8"></script>
-<script src="js/app.js?v=8"></script>
-<script src="js/ads.js?v=8"></script>
+<script src="js/config.js?v=9"></script>
+<script src="js/app.js?v=9"></script>
+<script src="js/ads.js?v=9"></script>
 <script>
 renderHeader("library");
 renderFooter();
@@ -65,10 +65,35 @@ function renderAuth() {
 
 async function renderLibrary() {
   content.innerHTML = `
+    <div class="section-title">My uploads <a class="btn" href="upload.html" style="margin-left:8px">＋ Upload</a></div>
+    <div id="upPending"></div>
+    <div class="grid" id="myvids"></div>
     <div class="section-title">Continue watching</div><div class="grid" id="hist"></div>
     <div class="section-title">My playlists <button class="btn" id="newPl" style="margin-left:8px">+ New</button></div>
     <div id="playlists"></div>
     <div class="section-title">Liked videos</div><div class="grid" id="liked"></div>`;
+  try {
+    const up = await api("/api/me/uploads");
+    const pend = $("#upPending");
+    if (up.pending && up.pending.length) {
+      pend.innerHTML = up.pending.map(p =>
+        `<div class="step"><h3>${esc(p.title)}</h3>
+         <p>${p.status === "failed" ? "❌ Failed: " + esc(p.error || "unknown error") :
+              p.status === "sent" ? "⏳ Sent — waiting for review…" : "⏳ Processing…"}</p></div>`).join("");
+    }
+    const mv = $("#myvids");
+    if (!up.videos.length && !up.pending.length)
+      mv.innerHTML = '<p style="color:var(--muted)">You haven\'t uploaded anything yet. <a href="upload.html" style="color:var(--accent)">Upload your first video</a></p>';
+    up.videos.forEach(v => {
+      const c = videoCard(v);
+      const badge = document.createElement("div");
+      badge.innerHTML = `<span class="badge-dur" style="position:static;display:inline-block;margin-top:6px">${
+        v.visibility === "published" ? "🟢 Live" : "🟡 In review"}</span>`;
+      const wrap = document.createElement("div");
+      wrap.appendChild(c); wrap.appendChild(badge);
+      mv.appendChild(wrap);
+    });
+  } catch (e) {}
   try {
     const h = await api("/api/history");
     const hist = $("#hist");

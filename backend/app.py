@@ -43,6 +43,14 @@ DATA_DIR = Path(os.environ.get("DATA_DIR", BASE_DIR / ".." / "data")).resolve()
 DATA_DIR.mkdir(parents=True, exist_ok=True)
 THUMB_DIR = DATA_DIR / "thumbs"
 THUMB_DIR.mkdir(exist_ok=True)
+UPLOAD_TMP_DIR = DATA_DIR / "upload_tmp"
+UPLOAD_TMP_DIR.mkdir(exist_ok=True)
+
+# v6 upload limits (env-overridable)
+MAX_UPLOAD_BYTES = int(os.environ.get("MAX_UPLOAD_MB", "500")) * 1024 * 1024
+ALLOWED_UPLOAD_MIME = {"video/mp4", "video/webm", "video/quicktime",
+                       "video/x-matroska", "video/x-msvideo", "video/3gpp",
+                       "video/x-flv", "application/octet-stream"}
 
 DB_PATH = DATA_DIR / "app.db"
 SESSION_PATH = DATA_DIR / "tg_session.session"
@@ -119,12 +127,33 @@ def init_db():
     schema = (BASE_DIR / "schema.sql").read_text()
     con = db()
     con.executescript(schema)
+    # v6: uploaded_by column (ALTER TABLE has no IF NOT EXISTS — check first)
+    cols = [r["name"] for r in con.execute("PRAGMA table_info(videos)")]
+    if "uploaded_by" not in cols:
+        con.execute("ALTER TABLE videos ADD COLUMN uploaded_by INTEGER REFERENCES users(id)")
     con.commit()
     con.close()
 
 
 def row_to_dict(r: sqlite3.Row) -> dict:
     return dict(r) if r is not None else None
+
+
+# ------------------------------------------------------- simple rate limiter
+# In-memory fixed-window limiter (per key). Guards brute force & upload abuse.
+_RL: dict = {}
+
+def rate_limit(key: str, limit: int, window_s: int) -> bool:
+    """True if the action is allowed, False if over the limit."""
+    now = time.time()
+    bucket = _RL.get(key)
+    if not bucket or now - bucket[0] >= window_s:
+        _RL[key] = (now, 1)
+        return True
+    if bucket[1] >= limit:
+        return False
+    _RL[key] = (bucket[0], bucket[1] + 1)
+    return True
 
 
 # ---------------------------------------------------------------- auth
@@ -196,6 +225,18 @@ app.add_middleware(
     allow_methods=["*"],
     allow_headers=["*"],
 )
+
+
+@app.middleware("http")
+async def secure_headers(request: Request, call_next):
+    """Hardened response headers (clickjacking, MIME sniffing, XSS)."""
+    resp = await call_next(request)
+    resp.headers["X-Content-Type-Options"] = "nosniff"
+    resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+    resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
+    # API responses are never pages — but static HTML is served too, so keep
+    # the policy permissive enough for the site's own inline scripts/styles.
+    return resp
 
 init_db()
 
@@ -487,17 +528,41 @@ async def sync_channel(limit: int = 300) -> dict:
                 skipped += 1
                 continue
             title = (msg.text or "").strip().split("\n")[0][:120] or attrs["file_name"] or "Untitled video"
-            con.execute(
-                """INSERT INTO videos
-                   (title, description, category_id, tg_channel_id, tg_message_id,
-                    tg_file_unique_id, file_size, duration, mime, visibility,
-                    published_at)
-                   VALUES (?, ?, (SELECT id FROM categories WHERE slug='uncategorized'),
-                           ?, ?, ?, ?, ?, ?, 'published', datetime('now'))""",
-                (title, (msg.text or "").strip()[:2000], tg.channel_id,
-                 msg.id, attrs["unique_id"], attrs["file_size"],
-                 attrs["duration"], attrs["mime"]),
-            )
+            # v6: if this message is a user upload (website -> channel), link it
+            # to that user and hold it in the moderation queue (unpublished).
+            pu = con.execute(
+                "SELECT id, user_id, title, description, category_id FROM pending_uploads "
+                "WHERE tg_message_id=? AND status='sent'", (msg.id,)).fetchone()
+            if pu:
+                con.execute(
+                    """INSERT INTO videos
+                       (title, description, category_id, tg_channel_id, tg_message_id,
+                        tg_file_unique_id, file_size, duration, mime, visibility,
+                        published_at, uploaded_by)
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpublished', NULL, ?)""",
+                    (pu["title"] or title, pu["description"] or "",
+                     pu["category_id"] or None, tg.channel_id,
+                     msg.id, attrs["unique_id"], attrs["file_size"],
+                     attrs["duration"], attrs["mime"], pu["user_id"]),
+                )
+                con.execute("UPDATE pending_uploads SET status='done' WHERE id=?", (pu["id"],))
+                # fall back to Uncategorized if the upload had no category
+                con.execute(
+                    "UPDATE videos SET category_id=(SELECT id FROM categories WHERE slug='uncategorized') "
+                    "WHERE id IN (SELECT id FROM videos WHERE tg_message_id=?) AND category_id IS NULL",
+                    (msg.id,))
+            else:
+                con.execute(
+                    """INSERT INTO videos
+                       (title, description, category_id, tg_channel_id, tg_message_id,
+                        tg_file_unique_id, file_size, duration, mime, visibility,
+                        published_at)
+                       VALUES (?, ?, (SELECT id FROM categories WHERE slug='uncategorized'),
+                               ?, ?, ?, ?, ?, ?, 'published', datetime('now'))""",
+                    (title, (msg.text or "").strip()[:2000], tg.channel_id,
+                     msg.id, attrs["unique_id"], attrs["file_size"],
+                     attrs["duration"], attrs["mime"]),
+                )
             added += 1
         con.commit()
     finally:
@@ -554,6 +619,8 @@ def _public_video_row(r: sqlite3.Row, user_id: Optional[int] = None) -> dict:
         "category": v["cat_name"], "category_slug": v["cat_slug"],
         "duration": v["duration"], "file_size": v["file_size"],
         "view_count": v["view_count"], "status": v["status"],
+        "visibility": v.get("visibility", "published"),
+        "uploaded_by": v.get("uploaded_by"),
         "published_at": v["published_at"],
         "thumb_url": f"/api/thumb/{v['id']}" if v["thumb_path"] else None,
         "stream_url": f"/api/stream/{v['id']}",
@@ -627,13 +694,20 @@ def list_videos(q: Optional[str] = None, category: Optional[str] = None,
 
 
 @app.get("/api/videos/{video_id}")
-def video_detail(video_id: int, user: Optional[dict] = Depends(optional_user)):
+def video_detail(video_id: int, user: Optional[dict] = Depends(optional_user),
+                at: Optional[str] = None):
     con = db()
     r = con.execute(f"{VIDEO_SELECT_COUNTS} WHERE v.id=?", (video_id,)).fetchone()
     con.close()
-    if not r or row_to_dict(r)["visibility"] != "published":
+    if not r:
         raise HTTPException(404, "Video not found")
+    v = row_to_dict(r)
     uid = user["id"] if user else None
+    # unpublished videos are visible to their uploader or the admin only
+    if v["visibility"] != "published":
+        is_admin = bool(ADMIN_TOKEN) and hmac.compare_digest(at or "", ADMIN_TOKEN)
+        if not (is_admin or (uid and v.get("uploaded_by") == uid)):
+            raise HTTPException(404, "Video not found")
     detail = _public_video_row(r, uid)
     # related: same category first, then latest
     con = db()
@@ -727,14 +801,20 @@ def parse_range(header: Optional[str], size: int) -> Optional[tuple]:
 
 
 @app.get("/api/stream/{video_id}")
-async def stream_video(video_id: int, request: Request):
+async def stream_video(video_id: int, request: Request,
+                     at: Optional[str] = None,
+                     user: Optional[dict] = Depends(optional_user)):
     con = db()
-    r = con.execute("SELECT * FROM videos WHERE id=? AND visibility='published'",
-                    (video_id,)).fetchone()
+    r = con.execute("SELECT * FROM videos WHERE id=?", (video_id,)).fetchone()
     con.close()
     if not r:
         raise HTTPException(404, "Video not found")
     v = row_to_dict(r)
+    if v["visibility"] != "published":
+        is_admin = bool(ADMIN_TOKEN) and hmac.compare_digest(at or "", ADMIN_TOKEN)
+        uid = user["id"] if user else None
+        if not (is_admin or (uid and v.get("uploaded_by") == uid)):
+            raise HTTPException(404, "Video not found")
     if v["status"] == "unavailable":
         raise HTTPException(410, "This video is no longer available")
     try:
@@ -777,7 +857,10 @@ async def stream_video(video_id: int, request: Request):
 # ============================================================ auth + user features
 
 @app.post("/api/auth/signup")
-def signup(body: dict):
+def signup(body: dict, request: Request):
+    ip = (request.client.host if request.client else "?")
+    if not rate_limit(f"signup:{ip}", 10, 3600):
+        raise HTTPException(429, "Too many signups from this address, try later")
     name = (body.get("name") or "").strip()[:60]
     email = (body.get("email") or "").strip().lower()[:120]
     password = body.get("password") or ""
@@ -799,8 +882,11 @@ def signup(body: dict):
 
 
 @app.post("/api/auth/login")
-def login(body: dict):
+def login(body: dict, request: Request):
     email = (body.get("email") or "").strip().lower()
+    ip = (request.client.host if request.client else "?")
+    if not rate_limit(f"login:{ip}:{email}", 15, 600):
+        raise HTTPException(429, "Too many login attempts, wait a few minutes")
     password = body.get("password") or ""
     con = db()
     r = con.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
@@ -1012,6 +1098,125 @@ def get_history(user: dict = Depends(require_user)):
     return items
 
 
+# ============================================================ user uploads (v6)
+
+async def _send_upload_to_telegram(upload_id: int):
+    """Background: forward a saved upload file to the Telegram channel.
+
+    Marks the pending_uploads row 'sent' with the Telegram message id; the
+    channel sync then imports it as an unpublished (moderation) video.
+    """
+    con = db()
+    row = con.execute("SELECT * FROM pending_uploads WHERE id=?", (upload_id,)).fetchone()
+    con.close()
+    if not row:
+        return
+    try:
+        client = await tg.client()
+        if not tg.channel_id:
+            raise RuntimeError("Channel not set")
+        con = db()
+        con.execute("UPDATE pending_uploads SET status='sending' WHERE id=?", (upload_id,))
+        con.commit()
+        con.close()
+        caption = row["title"]
+        msg = await client.send_file(
+            tg.channel_id, row["temp_path"],
+            caption=caption, supports_streaming=True,
+            attributes=[])
+        con = db()
+        con.execute("UPDATE pending_uploads SET status='sent', tg_message_id=? WHERE id=?",
+                    (msg.id, upload_id))
+        con.commit()
+        con.close()
+        # nudge the sync so the video appears quickly
+        try:
+            await sync_channel(limit=10)
+        except Exception:
+            pass
+    except Exception as e:
+        con = db()
+        con.execute("UPDATE pending_uploads SET status='failed', error=? WHERE id=?",
+                    (str(e)[:300], upload_id))
+        con.commit()
+        con.close()
+
+
+@app.post("/api/upload")
+async def upload_video(request: Request, user: dict = Depends(require_user)):
+    """YouTube-style upload: video file + title -> Telegram channel (moderated)."""
+    if not tg.configured() or not tg.channel_id:
+        raise HTTPException(503, "Uploads are not available right now")
+    if not rate_limit(f"upload:{user['id']}", 5, 3600):
+        raise HTTPException(429, "Upload limit reached (5/hour). Try again later.")
+    form = await request.form()
+    file = form.get("file")
+    title = (form.get("title") or "").strip()[:120]
+    description = (form.get("description") or "").strip()[:2000]
+    category = (form.get("category") or "uncategorized").strip()
+    if file is None or not getattr(file, "filename", ""):
+        raise HTTPException(400, "No video file selected")
+    if not title:
+        raise HTTPException(400, "Title is required")
+    mime = (file.content_type or "application/octet-stream").lower()
+    ext = Path(file.filename).suffix.lower()
+    if mime not in ALLOWED_UPLOAD_MIME and ext not in (".mp4", ".webm", ".mov", ".mkv", ".avi", ".3gp", ".flv"):
+        raise HTTPException(400, "Only video files allowed (mp4, webm, mov, mkv)")
+    con = db()
+    cat = con.execute("SELECT id FROM categories WHERE slug=?", (category,)).fetchone()
+    category_id = cat["id"] if cat else None
+    # Stream the upload to a temp file (never buffer a big file in RAM).
+    tmp = UPLOAD_TMP_DIR / f"u{user['id']}_{int(time.time())}_{secrets.token_hex(4)}{ext or '.mp4'}"
+    size = 0
+    try:
+        with open(tmp, "wb") as fh:
+            while True:
+                chunk = await file.read(1024 * 1024)
+                if not chunk:
+                    break
+                size += len(chunk)
+                if size > MAX_UPLOAD_BYTES:
+                    fh.close()
+                    tmp.unlink(missing_ok=True)
+                    raise HTTPException(413, f"File too large (max {MAX_UPLOAD_BYTES // (1024*1024)} MB)")
+                fh.write(chunk)
+    except HTTPException:
+        raise
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(500, "Could not save the upload")
+    if size == 0:
+        tmp.unlink(missing_ok=True)
+        raise HTTPException(400, "Empty file")
+    cur = con.execute(
+        """INSERT INTO pending_uploads
+           (user_id, title, description, category_id, temp_path, file_size, mime, status)
+           VALUES (?,?,?,?,?,?,?, 'uploading')""",
+        (user["id"], title, description, category_id, str(tmp), size, mime))
+    con.commit()
+    upload_id = cur.lastrowid
+    con.close()
+    asyncio.create_task(_send_upload_to_telegram(upload_id))
+    return {"ok": True, "upload_id": upload_id,
+            "message": "Upload received. Your video will appear after review."}
+
+
+@app.get("/api/me/uploads")
+def my_uploads(user: dict = Depends(require_user)):
+    """The signed-in user's own videos + in-flight uploads."""
+    con = db()
+    vids = con.execute(
+        VIDEO_SELECT_COUNTS + " WHERE v.uploaded_by=? ORDER BY v.id DESC",
+        (user["id"],)).fetchall()
+    pend = con.execute(
+        "SELECT id, title, status, error, created_at FROM pending_uploads "
+        "WHERE user_id=? AND status != 'done' ORDER BY id DESC",
+        (user["id"],)).fetchall()
+    con.close()
+    return {"videos": [_public_video_row(r, user["id"]) for r in vids],
+            "pending": [row_to_dict(r) for r in pend]}
+
+
 # ============================================================ admin API
 
 
@@ -1078,10 +1283,47 @@ async def admin_bulk(request: Request, _: dict = Depends(require_admin)):
         con.execute(f"DELETE FROM videos WHERE id IN ({ph})", ids)
     else:
         vis = "published" if action == "publish" else "unpublished"
-        con.execute(f"UPDATE videos SET visibility=? WHERE id IN ({ph})", [vis] + ids)
+        con.execute(f"UPDATE videos SET visibility=?, published_at=CASE WHEN ?='published' THEN COALESCE(published_at, datetime('now')) ELSE published_at END WHERE id IN ({ph})",
+                    [vis, vis] + ids)
     con.commit()
     con.close()
     return {"ok": True, "action": action, "count": len(ids)}
+
+
+@app.get("/api/admin/uploads")
+def admin_uploads(_: None = Depends(require_admin)):
+    """Moderation queue: user-uploaded videos waiting for review + pending sends."""
+    con = db()
+    queue = con.execute(
+        """SELECT v.id, v.title, v.created_at, u.name AS uploader, u.email AS uploader_email
+           FROM videos v JOIN users u ON u.id=v.uploaded_by
+           WHERE v.visibility='unpublished' AND v.uploaded_by IS NOT NULL
+           ORDER BY v.id DESC""").fetchall()
+    sending = con.execute(
+        """SELECT p.id, p.title, p.status, p.error, p.created_at, u.name AS uploader
+           FROM pending_uploads p JOIN users u ON u.id=p.user_id
+           WHERE p.status IN ('uploading','sending','sent','failed')
+           ORDER BY p.id DESC""").fetchall()
+    con.close()
+    return {"queue": [row_to_dict(r) for r in queue],
+            "sending": [row_to_dict(r) for r in sending]}
+
+
+@app.delete("/api/admin/uploads/{upload_id}")
+def admin_upload_discard(upload_id: int, _: None = Depends(require_admin)):
+    """Discard a stuck/failed pending upload (frees its temp file)."""
+    con = db()
+    r = con.execute("SELECT temp_path FROM pending_uploads WHERE id=?", (upload_id,)).fetchone()
+    if r:
+        con.execute("DELETE FROM pending_uploads WHERE id=?", (upload_id,))
+        con.commit()
+    con.close()
+    if r and r["temp_path"] and os.path.exists(r["temp_path"]):
+        try:
+            os.remove(r["temp_path"])
+        except Exception:
+            pass
+    return {"ok": True}
 
 
 @app.get("/api/admin/comments")
@@ -1206,6 +1448,19 @@ def admin_edit(video_id: int, body: dict, _: None = Depends(require_admin)):
     con.commit()
     con.close()
     return {"ok": True}
+
+
+@app.get("/api/admin/videos/{video_id}")
+def admin_video_detail(video_id: int, _: None = Depends(require_admin)):
+    """Full video detail for admin preview (ignores visibility)."""
+    con = db()
+    r = con.execute(f"{VIDEO_SELECT_COUNTS} WHERE v.id=?", (video_id,)).fetchone()
+    con.close()
+    if not r:
+        raise HTTPException(404, "Video not found")
+    detail = _public_video_row(r)
+    detail["related"] = []
+    return detail
 
 
 @app.delete("/api/admin/videos/{video_id}")

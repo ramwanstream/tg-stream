@@ -1,0 +1,125 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Upload — StreamHub</title>
+<link rel="stylesheet" href="css/style.css?v=9">
+<style>
+.dropzone{border:2px dashed #34344a;border-radius:16px;padding:34px 18px;text-align:center;cursor:pointer;transition:.2s;background:var(--bg2)}
+.dropzone:hover,.dropzone.drag{border-color:var(--accent);background:#1d1d2c}
+.dropzone .big{font-size:44px;margin-bottom:8px}
+.dropzone p{color:var(--muted);margin:4px 0;font-size:14px}
+.fname{color:var(--text);font-weight:600;word-break:break-all}
+.progress{height:12px;background:#23232f;border-radius:99px;overflow:hidden;margin:14px 0 6px;display:none}
+.progress>div{height:100%;width:0%;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .25s;border-radius:99px}
+.pct{font-size:13px;color:var(--muted);text-align:center}
+</style>
+</head>
+<body>
+<header class="top"></header>
+<div class="wrap">
+  <div class="form-card" style="max-width:560px">
+    <h2>📤 Upload a video</h2>
+    <div id="notLogged" style="display:none">
+      <p style="color:var(--muted)">You need an account to upload videos.</p>
+      <a class="btn primary" href="library.html">Sign in / Create account</a>
+    </div>
+    <div id="upForm">
+      <div class="dropzone" id="dz">
+        <div class="big">🎬</div>
+        <p class="fname" id="dzText">Tap to choose a video file</p>
+        <p>MP4, WebM, MOV, MKV · Max 500 MB</p>
+        <input type="file" id="fileInput" accept="video/*" style="display:none">
+      </div>
+      <div class="field" style="margin-top:16px">
+        <label>Title</label>
+        <input id="title" placeholder="Give your video a title" maxlength="120">
+      </div>
+      <div class="field">
+        <label>Description</label>
+        <textarea id="desc" rows="3" maxlength="2000" placeholder="What's this video about?"></textarea>
+      </div>
+      <div class="field">
+        <label>Category</label>
+        <select id="cat"></select>
+      </div>
+      <div class="progress" id="bar"><div></div></div>
+      <div class="pct" id="pct"></div>
+      <div class="error" id="err" style="display:none"></div>
+      <div class="ok" id="okMsg" style="display:none"></div>
+      <button class="btn primary" id="upBtn" style="width:100%;justify-content:center;padding:12px">Upload video</button>
+      <p style="color:var(--muted);font-size:12px;margin-top:12px">
+        Your video is sent to the StreamHub library and goes live after a quick review.
+        Only upload videos you own or have permission to share.
+      </p>
+    </div>
+  </div>
+</div>
+<footer></footer>
+<script src="js/config.js?v=9"></script>
+<script src="js/app.js?v=9"></script>
+<script>
+renderHeader("");
+renderFooter();
+const logged = !!localStorage.getItem("token");
+if (!logged) { $("#notLogged").style.display = ""; $("#upForm").style.display = "none"; }
+
+api("/api/categories").then(cats => {
+  $("#cat").innerHTML = cats.map(c => `<option value="${esc(c.slug)}">${esc(c.name)}</option>`).join("");
+}).catch(() => {});
+
+let picked = null;
+const dz = $("#dz"), fi = $("#fileInput");
+dz.onclick = () => fi.click();
+fi.onchange = () => { picked = fi.files[0] || null; showPicked(); };
+["dragover","dragenter"].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.add("drag"); }));
+["dragleave","drop"].forEach(ev => dz.addEventListener(ev, e => { e.preventDefault(); dz.classList.remove("drag"); }));
+dz.addEventListener("drop", e => { picked = e.dataTransfer.files[0] || null; showPicked(); });
+function showPicked() {
+  $("#dzText").textContent = picked ? picked.name + " (" + (picked.size/1048576).toFixed(1) + " MB)" : "Tap to choose a video file";
+}
+
+$("#upBtn").onclick = () => {
+  const err = $("#err"), ok = $("#okMsg");
+  err.style.display = "none"; ok.style.display = "none";
+  if (!picked) { err.textContent = "Choose a video file first."; err.style.display = ""; return; }
+  const title = $("#title").value.trim();
+  if (!title) { err.textContent = "Add a title."; err.style.display = ""; return; }
+  const fd = new FormData();
+  fd.append("file", picked);
+  fd.append("title", title);
+  fd.append("description", $("#desc").value.trim());
+  fd.append("category", $("#cat").value);
+  const xhr = new XMLHttpRequest();
+  xhr.open("POST", API + "/api/upload");
+  xhr.setRequestHeader("Authorization", "Bearer " + localStorage.getItem("token"));
+  $("#bar").style.display = "";
+  $("#upBtn").disabled = true;
+  xhr.upload.onprogress = e => {
+    if (e.lengthComputable) {
+      const p = Math.round(e.loaded / e.total * 100);
+      $("#bar").firstElementChild.style.width = p + "%";
+      $("#pct").textContent = "Uploading… " + p + "%";
+    }
+  };
+  xhr.onload = () => {
+    let r = {};
+    try { r = JSON.parse(xhr.responseText); } catch (e) {}
+    if (xhr.status >= 200 && xhr.status < 300) {
+      $("#pct").textContent = "";
+      ok.textContent = "✅ " + (r.message || "Upload received! It will appear after review.");
+      ok.style.display = "";
+      setTimeout(() => location.href = "library.html", 1800);
+    } else {
+      err.textContent = r.detail || ("Upload failed (" + xhr.status + ")");
+      err.style.display = "";
+      $("#upBtn").disabled = false;
+    }
+  };
+  xhr.onerror = () => { err.textContent = "Network error during upload."; err.style.display = ""; $("#upBtn").disabled = false; };
+  xhr.send(fd);
+};
+</script>
+</body>
+</html>

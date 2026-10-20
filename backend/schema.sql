@@ -93,3 +93,24 @@ CREATE TABLE IF NOT EXISTS comments (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_comments_video ON comments(video_id, created_at DESC);
+
+-- v6: user uploads (YouTube-style). Uploaded files go to the Telegram channel
+-- via the userbot; the existing sync then imports them as videos.
+-- Moderation: uploads start 'unpublished'; admin approves -> 'published'.
+-- uploaded_by links a video to the user who uploaded it (NULL = channel direct).
+CREATE TABLE IF NOT EXISTS pending_uploads (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  user_id INTEGER NOT NULL REFERENCES users(id) ON DELETE CASCADE,
+  title TEXT NOT NULL,
+  description TEXT NOT NULL DEFAULT '',
+  category_id INTEGER REFERENCES categories(id),
+  temp_path TEXT NOT NULL,
+  file_size INTEGER NOT NULL DEFAULT 0,
+  mime TEXT NOT NULL DEFAULT '',
+  status TEXT NOT NULL DEFAULT 'uploading' CHECK (status IN ('uploading','sending','sent','failed','done')),
+  tg_message_id INTEGER,
+  error TEXT,
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_pending_uploads_user ON pending_uploads(user_id, created_at DESC);
+CREATE INDEX IF NOT EXISTS idx_pending_uploads_status ON pending_uploads(status);

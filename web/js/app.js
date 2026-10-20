@@ -74,6 +74,7 @@ function renderHeader(active) {
         <input id="searchInput" type="search" placeholder="Search videos…" autocomplete="off">
       </form>
       <a class="navlink ${active === "library" ? "active" : ""}" href="library.html">Library</a>
+      <a class="navlink upload-link" href="upload.html">＋ Upload</a>
       ${logged
         ? `<button class="avatar-btn" id="avatarBtn" title="${esc(name)}">${esc(name[0].toUpperCase())}</button>`
         : `<a class="navlink" href="library.html">Sign in</a>`}

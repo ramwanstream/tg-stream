@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Watch</title>
-<link rel="stylesheet" href="css/style.css?v=8">
+<link rel="stylesheet" href="css/style.css?v=9">
 <style>
 .comments{margin-top:8px}
 .comment{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid #23232e}
@@ -19,9 +19,9 @@
 <body>
 <header class="top"></header>
 <div class="wrap" id="content"></div>
-<script src="js/config.js?v=8"></script>
-<script src="js/app.js?v=8"></script>
-<script src="js/ads.js?v=8"></script>
+<script src="js/config.js?v=9"></script>
+<script src="js/app.js?v=9"></script>
+<script src="js/ads.js?v=9"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -35,7 +35,9 @@ else load();
 async function load() {
   content.innerHTML = '<div class="thumb skel" style="margin-top:14px"></div>';
   let v;
-  try { v = await api("/api/videos/" + id); }
+  const at = new URLSearchParams(location.search).get("at");
+  const atQ = at ? ("&at=" + encodeURIComponent(at)) : "";
+  try { v = await api("/api/videos/" + id + atQ); }
   catch (e) { showEmpty(content, "⚠️", "Video not available", e.message); return; }
 
   const resumeKey = "pos_" + v.id;
@@ -46,7 +48,7 @@ async function load() {
     <div class="player-wrap">
       <video class="player" id="player" controls playsinline preload="metadata"
              ${v.thumb_url ? `poster="${esc(v.thumb_url)}"` : ""}>
-        <source src="${esc(v.stream_url)}" type="video/mp4">
+        <source src="${esc(v.stream_url + atQ)}" type="video/mp4">
         Sorry, your browser cannot play this video.
       </video>
     </div>

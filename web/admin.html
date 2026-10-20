@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Admin · StreamHub</title>
-<link rel="stylesheet" href="css/style.css?v=8">
+<link rel="stylesheet" href="css/style.css?v=9">
 <style>
 .tabs{display:flex;gap:6px;overflow-x:auto;padding:4px 0 12px;position:sticky;top:0;background:var(--bg);z-index:5}
 .tab{white-space:nowrap;border:1px solid #2a2a38;background:var(--bg2);color:var(--text);border-radius:999px;padding:8px 16px;font-size:13px;cursor:pointer}
@@ -47,8 +47,8 @@ select,input[type=text],input[type=search]{background:var(--bg2);border:1px soli
     <button class="btn primary" id="eSave">Save</button>
   </div>
 </dialog>
-<script src="js/config.js?v=8"></script>
-<script src="js/app.js?v=8"></script>
+<script src="js/config.js?v=9"></script>
+<script src="js/app.js?v=9"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -83,7 +83,7 @@ async function aapi(path, opts = {}) {
 }
 
 function tabs() {
-  const t = [["dash","📊 Dashboard"],["videos","🎬 Videos"],["comments","💬 Comments"],["users","👥 Users"],["setup","⚙️ Setup"]];
+  const t = [["dash","📊 Dashboard"],["review","📥 Review"],["videos","🎬 Videos"],["comments","💬 Comments"],["users","👥 Users"],["setup","⚙️ Setup"]];
   return `<div class="tabs">${t.map(([k,l]) => `<button class="tab${tab===k?" active":""}" data-tab="${k}">${l}</button>`).join("")}</div>`;
 }
 function bindTabs() {
@@ -96,6 +96,7 @@ async function boot() {
   const pane = $("#pane");
   if (tab === "dash") return paneDash(pane);
   if (tab === "videos") return paneVideos(pane);
+  if (tab === "review") return paneReview(pane);
   if (tab === "comments") return paneComments(pane);
   if (tab === "users") return paneUsers(pane);
   return paneSetup(pane);
@@ -141,6 +142,50 @@ async function paneDash(pane) {
     <div class="panel"><h3>👥 Newest users</h3>
       ${st.recent_users.map(u => `<div class="kv"><span>${esc(u.name)}<br><small>${esc(u.email)}</small></span><small>${esc((u.created_at||"").slice(0,10))}</small></div>`).join("") || "<small>No users yet.</small>"}
     </div>`;
+}
+
+/* ---------------- Review (user upload moderation) ---------------- */
+async function paneReview(pane) {
+  pane.innerHTML = '<p style="color:var(--muted)">Loading…</p>';
+  try {
+    const d = await adminApi("/api/admin/uploads");
+    let html = `<div class="section-title">⏳ Awaiting review (${d.queue.length})</div>`;
+    if (!d.queue.length) html += '<p style="color:var(--muted)">No uploads waiting.</p>';
+    d.queue.forEach(v => {
+      html += `<div class="admin-row">
+        <div class="grow"><b>${esc(v.title)}</b>
+        <small>by ${esc(v.uploader)} (${esc(v.uploader_email || "")}) · ${esc(v.created_at || "")}</small></div>
+        <div class="row-actions">
+          <a class="btn" href="watch.html?v=${v.id}&at=${encodeURIComponent(token)}" target="_blank">Preview</a>
+          <button class="btn primary" data-approve="${v.id}">Approve</button>
+          <button class="btn danger" data-reject="${v.id}">Reject</button>
+        </div></div>`;
+    });
+    html += `<div class="section-title" style="margin-top:18px">📡 In-flight uploads (${d.sending.length})</div>`;
+    if (!d.sending.length) html += '<p style="color:var(--muted)">Nothing in flight.</p>';
+    d.sending.forEach(p => {
+      html += `<div class="admin-row">
+        <div class="grow"><b>${esc(p.title)}</b>
+        <small>by ${esc(p.uploader)} · ${esc(p.status)}${p.error ? " · " + esc(p.error) : ""}</small></div>
+        <div class="row-actions">
+          ${p.status === "failed" ? `<button class="btn danger" data-discard="${p.id}">Discard</button>` : ""}
+        </div></div>`;
+    });
+    pane.innerHTML = html;
+    pane.querySelectorAll("[data-approve]").forEach(b => b.onclick = async () => {
+      await adminApi("/api/admin/videos/bulk", { method: "POST", body: JSON.stringify({ ids: [+b.dataset.approve], action: "publish" }) });
+      paneReview(pane);
+    });
+    pane.querySelectorAll("[data-reject]").forEach(b => b.onclick = async () => {
+      if (!confirm("Reject and delete this upload?")) return;
+      await adminApi("/api/admin/videos/" + b.dataset.reject, { method: "DELETE" });
+      paneReview(pane);
+    });
+    pane.querySelectorAll("[data-discard]").forEach(b => b.onclick = async () => {
+      await adminApi("/api/admin/uploads/" + b.dataset.discard, { method: "DELETE" });
+      paneReview(pane);
+    });
+  } catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; }
 }
 
 /* ---------------- Videos ---------------- */
