@@ -28,14 +28,6 @@ header.top {
 .top-inner { display: flex; align-items: center; gap: 10px; padding: 10px 12px; max-width: 1100px; margin: 0 auto; }
 .logo { font-weight: 800; font-size: 19px; letter-spacing: .3px; white-space: nowrap; }
 .logo span { color: var(--accent2); }
-/* mobile: search goes full-width on its own row */
-@media (max-width: 559px) {
-  .top-inner { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
-  .logo { font-size: 17px; }
-  .search { flex-basis: 100%; order: 5; }
-  .search input { padding: 8px 14px; font-size: 13px; }
-  .navlink { font-size: 13px; padding: 8px 6px; }
-}
 .search { flex: 1; display: flex; }
 .search input {
   flex: 1; background: var(--bg2); border: 1px solid #2a2a38; color: var(--text);
@@ -156,3 +148,15 @@ dialog {
   border-radius: var(--radius); padding: 18px; width: min(440px, 92vw);
 }
 dialog::backdrop { background: rgba(0,0,0,.6); }
+
+/* ---------- mobile (must stay LAST so it overrides base rules) ---------- */
+@media (max-width: 559px) {
+  .top-inner { flex-wrap: wrap; gap: 8px; padding: 8px 12px; }
+  .logo { font-size: 17px; }
+  .search { flex: 1 1 100%; order: 5; }
+  .search input { padding: 8px 14px; font-size: 13px; }
+  .navlink { font-size: 13px; padding: 8px 6px; }
+  .hero h2 { font-size: 17px; }
+  .watch-title { font-size: 17px; }
+  .actions .btn { padding: 8px 13px; font-size: 13px; }
+}
