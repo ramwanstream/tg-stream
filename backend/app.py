@@ -141,6 +141,10 @@ def init_db():
     ccols = [r["name"] for r in con.execute("PRAGMA table_info(comments)")]
     if "parent_id" not in ccols:
         con.execute("ALTER TABLE comments ADD COLUMN parent_id INTEGER")
+    # v9: featured videos
+    vcols = [r["name"] for r in con.execute("PRAGMA table_info(videos)")]
+    if "featured" not in vcols:
+        con.execute("ALTER TABLE videos ADD COLUMN featured INTEGER NOT NULL DEFAULT 0")
     con.commit()
     con.close()
 
@@ -275,6 +279,36 @@ async def secure_headers(request: Request, call_next):
     # API responses are never pages — but static HTML is served too, so keep
     # the policy permissive enough for the site's own inline scripts/styles.
     return resp
+
+
+_MAINTENANCE_HTML = """<!doctype html><html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Maintenance</title><style>body{background:#07070d;color:#f2f2f7;font-family:system-ui;
+display:flex;align-items:center;justify-content:center;min-height:100vh;margin:0;text-align:center}
+.box{padding:24px}.big{font-size:52px}h1{font-size:22px}p{color:#9a9aad}</style></head>
+<body><div class="box"><div class="big">🛠️</div><h1>We are upgrading the site</h1>
+<p>StreamHub is under maintenance. Please check back in a little while.</p></div></body></html>"""
+
+
+@app.middleware("http")
+async def maintenance_gate(request: Request, call_next):
+    """v9: when maintenance_mode is ON, only the admin can use the site."""
+    path = request.url.path
+    exempt = (path.startswith("/api/admin") or path == "/admin.html"
+              or path.startswith("/css/") or path.startswith("/js/")
+              or path == "/favicon.ico")
+    if not exempt:
+        try:
+            if get_setting("maintenance_mode", "0") == "1":
+                tok = request.headers.get("x-admin-token") or request.query_params.get("at")
+                if not (tok and ADMIN_TOKEN and hmac.compare_digest(tok, ADMIN_TOKEN)):
+                    from fastapi.responses import HTMLResponse, JSONResponse
+                    if path.startswith("/api/"):
+                        return JSONResponse({"detail": "Site is under maintenance"}, status_code=503)
+                    return HTMLResponse(_MAINTENANCE_HTML, status_code=503)
+        except Exception:
+            pass
+    return await call_next(request)
 
 init_db()
 
@@ -669,6 +703,7 @@ def _public_video_row(r: sqlite3.Row, user_id: Optional[int] = None) -> dict:
         "stream_url": f"/api/stream/{v['id']}",
         "like_count": v.get("like_count", 0) or 0,
         "comment_count": v.get("comment_count", 0) or 0,
+        "featured": bool(v.get("featured")),
     }
     out["liked"] = False
     out["resume_position"] = 0
@@ -700,11 +735,14 @@ VIDEO_SELECT_COUNTS = """SELECT v.*, c.name AS cat_name, c.slug AS cat_slug,
 @app.get("/api/videos")
 def list_videos(q: Optional[str] = None, category: Optional[str] = None,
                 page: int = 1, per_page: int = 24, sort: str = "new",
+                featured: int = 0,
                 user: Optional[dict] = Depends(optional_user)):
     per_page = max(1, min(per_page, 60))
     page = max(1, page)
     where = ["v.visibility='published'"]
     params: list = []
+    if featured:
+        where.append("v.featured=1")
     if q:
         where.append("(v.title LIKE ? OR v.description LIKE ?)")
         params += [f"%{q}%", f"%{q}%"]
@@ -767,7 +805,7 @@ def video_detail(video_id: int, user: Optional[dict] = Depends(optional_user),
 def list_categories():
     con = db()
     rows = con.execute(
-        """SELECT c.slug, c.name, COUNT(v.id) AS count FROM categories c
+        """SELECT c.id, c.slug, c.name, COUNT(v.id) AS count FROM categories c
            LEFT JOIN videos v ON v.category_id=c.id AND v.visibility='published'
            GROUP BY c.id ORDER BY count DESC, c.name""").fetchall()
     con.close()
@@ -1550,7 +1588,133 @@ async def admin_report_update(report_id: int, request: Request, _: None = Depend
 def public_settings():
     """Public site settings the frontend needs (name, uploads on/off)."""
     return {"site_name": get_setting("site_name", "StreamHub"),
-            "uploads_enabled": get_setting("uploads_enabled", "1") == "1"}
+            "uploads_enabled": get_setting("uploads_enabled", "1") == "1",
+            "announcement": get_setting("announcement", "")}
+
+
+@app.post("/api/admin/categories")
+async def admin_category_create(request: Request, _: None = Depends(require_admin)):
+    data = await request.json()
+    name = (data.get("name") or "").strip()[:60]
+    if not name:
+        raise HTTPException(400, "Name required")
+    slug = re.sub(r"[^a-z0-9-]", "-", name.lower())[:60].strip("-") or "cat"
+    con = db()
+    if con.execute("SELECT id FROM categories WHERE slug=?", (slug,)).fetchone():
+        con.close()
+        raise HTTPException(400, "A category with this name already exists")
+    cur = con.execute("INSERT INTO categories (name, slug) VALUES (?,?)", (name, slug))
+    con.commit()
+    cid = cur.lastrowid
+    con.close()
+    log_activity("category_add", f"category:{cid}", name)
+    return {"id": cid, "name": name, "slug": slug}
+
+
+@app.patch("/api/admin/categories/{cat_id}")
+async def admin_category_rename(cat_id: int, request: Request, _: None = Depends(require_admin)):
+    data = await request.json()
+    name = (data.get("name") or "").strip()[:60]
+    if not name:
+        raise HTTPException(400, "Name required")
+    con = db()
+    if not con.execute("SELECT id FROM categories WHERE id=?", (cat_id,)).fetchone():
+        con.close()
+        raise HTTPException(404, "Category not found")
+    con.execute("UPDATE categories SET name=? WHERE id=?", (name, cat_id))
+    con.commit()
+    con.close()
+    log_activity("category_rename", f"category:{cat_id}", name)
+    return {"ok": True}
+
+
+@app.delete("/api/admin/categories/{cat_id}")
+def admin_category_delete(cat_id: int, _: None = Depends(require_admin)):
+    con = db()
+    cat = con.execute("SELECT slug, name FROM categories WHERE id=?", (cat_id,)).fetchone()
+    if not cat:
+        con.close()
+        raise HTTPException(404, "Category not found")
+    if cat["slug"] == "uncategorized":
+        con.close()
+        raise HTTPException(400, "The Uncategorized category cannot be deleted")
+    unc = con.execute("SELECT id FROM categories WHERE slug='uncategorized'").fetchone()["id"]
+    con.execute("UPDATE videos SET category_id=? WHERE category_id=?", (unc, cat_id))
+    con.execute("DELETE FROM categories WHERE id=?", (cat_id,))
+    con.commit()
+    con.close()
+    log_activity("category_delete", f"category:{cat_id}", cat["name"])
+    return {"ok": True}
+
+
+@app.get("/api/admin/system")
+def admin_system(_: None = Depends(require_admin)):
+    """System info for the Super Admin dashboard."""
+    import shutil as _sh
+    db_path = DATA_DIR / "app.db"
+    usage = _sh.disk_usage(str(DATA_DIR))
+    con = db()
+    pending_review = con.execute(
+        "SELECT COUNT(*) c FROM videos WHERE visibility='unpublished' AND uploaded_by IS NOT NULL"
+    ).fetchone()["c"]
+    open_reports = con.execute(
+        "SELECT COUNT(*) c FROM reports WHERE status='open'").fetchone()["c"]
+    signups = {r["d"]: r["c"] for r in con.execute(
+        """SELECT date(created_at) d, COUNT(*) c FROM users
+           WHERE created_at >= datetime('now','-13 days') GROUP BY date(created_at)""")}
+    con.close()
+    days = [(datetime.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d")
+            for i in range(13, -1, -1)]
+    return {
+        "db_size_mb": round(db_path.stat().st_size / 1048576, 2) if db_path.exists() else 0,
+        "disk_total_gb": round(usage.total / 1073741824, 1),
+        "disk_free_gb": round(usage.free / 1073741824, 2),
+        "pending_review": pending_review,
+        "open_reports": open_reports,
+        "signups_by_day": [{"day": d, "signups": signups.get(d, 0)} for d in days],
+    }
+
+
+@app.get("/api/admin/backup")
+def admin_backup(_: None = Depends(require_admin)):
+    """Download the full SQLite database (site backup)."""
+    from fastapi.responses import FileResponse
+    db_path = DATA_DIR / "app.db"
+    if not db_path.exists():
+        raise HTTPException(404, "Database not found")
+    log_activity("backup", "", "database downloaded")
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%d-%H%M")
+    return FileResponse(str(db_path), media_type="application/octet-stream",
+                        filename=f"streamhub-backup-{stamp}.db")
+
+
+@app.get("/api/admin/export/{kind}")
+def admin_export(kind: str, _: None = Depends(require_admin)):
+    """CSV export of users or videos."""
+    import csv as _csv
+    import io as _io
+    from fastapi.responses import PlainTextResponse
+    con = db()
+    if kind == "users":
+        rows = con.execute("SELECT id, name, email, role, banned, created_at FROM users ORDER BY id").fetchall()
+        cols = ["id", "name", "email", "role", "banned", "created_at"]
+    elif kind == "videos":
+        rows = con.execute(
+            """SELECT v.id, v.title, c.name AS category, v.visibility, v.view_count,
+                      v.file_size, v.created_at FROM videos v
+               LEFT JOIN categories c ON c.id=v.category_id ORDER BY v.id""").fetchall()
+        cols = ["id", "title", "category", "visibility", "view_count", "file_size", "created_at"]
+    else:
+        con.close()
+        raise HTTPException(404, "Unknown export")
+    con.close()
+    buf = _io.StringIO()
+    w = _csv.writer(buf)
+    w.writerow(cols)
+    for r in rows:
+        w.writerow([r[c] for c in cols])
+    return PlainTextResponse(buf.getvalue(), media_type="text/csv",
+                             headers={"Content-Disposition": f"attachment; filename={kind}.csv"})
 
 
 @app.get("/api/admin/settings")
@@ -1564,7 +1728,8 @@ def admin_settings_get(_: None = Depends(require_admin)):
 @app.patch("/api/admin/settings")
 async def admin_settings_update(request: Request, _: None = Depends(require_admin)):
     data = await request.json()
-    allowed = {"site_name", "uploads_enabled", "moderation_enabled"}
+    allowed = {"site_name", "uploads_enabled", "moderation_enabled",
+               "announcement", "maintenance_mode"}
     con = db()
     for k, v in data.items():
         if k in allowed:
@@ -1688,6 +1853,9 @@ def admin_edit(video_id: int, body: dict, _: None = Depends(require_admin)):
     if "category" in body:
         fields.append("category_id=?")
         params.append(_resolve_category(body["category"]))
+    if "featured" in body:
+        fields.append("featured=?")
+        params.append(1 if body["featured"] else 0)
     if not fields:
         raise HTTPException(400, "Nothing to update")
     con = db()

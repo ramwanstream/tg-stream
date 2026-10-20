@@ -4,14 +4,28 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Admin · StreamHub</title>
-<link rel="stylesheet" href="css/style.css?v=12">
+<link rel="stylesheet" href="css/style.css?v=13">
 <style>
-.tabs{display:flex;gap:6px;overflow-x:auto;padding:4px 0 12px;position:sticky;top:0;background:var(--bg);z-index:5}
-.tab{white-space:nowrap;border:1px solid #2a2a38;background:var(--bg2);color:var(--text);border-radius:999px;padding:8px 16px;font-size:13px;cursor:pointer}
-.tab.active{background:var(--accent);border-color:var(--accent);color:#fff}
+.shell{display:flex;gap:18px;align-items:flex-start}
+.side{width:210px;flex-shrink:0;position:sticky;top:76px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:18px;padding:14px 10px;backdrop-filter:blur(14px)}
+.side-logo{font-weight:800;font-size:15px;padding:4px 10px 12px;background:linear-gradient(90deg,#a78bfa,#22d3ee);-webkit-background-clip:text;background-clip:text;color:transparent}
+.stab{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;background:transparent;color:var(--text);border-radius:12px;padding:10px 12px;font-size:14px;cursor:pointer;margin:2px 0}
+.stab .si{font-size:16px}
+.stab:hover{background:rgba(255,255,255,.05)}
+.stab.active{background:linear-gradient(135deg,#8b5cf6,#6366f1);color:#fff;box-shadow:0 6px 18px rgba(124,92,246,.35)}
+.side-link{display:block;margin-top:12px;padding:9px 12px;border-radius:12px;color:var(--muted);font-size:13px;text-decoration:none;border:1px dashed rgba(255,255,255,.14)}
+.side-link:hover{color:var(--text)}
+.main{flex:1;min-width:0}
+@media (max-width:760px){
+  .shell{flex-direction:column}
+  .side{width:100%;position:static;display:flex;flex-wrap:wrap;gap:4px;align-items:center}
+  .side-logo{width:100%;padding-bottom:6px}
+  .stab{width:auto;padding:8px 10px;font-size:13px}
+  .side-link{margin-top:4px}
+}
 .stat-grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:10px;margin:12px 0}
-.stat{background:var(--card);border-radius:12px;padding:14px}
-.stat b{font-size:22px;display:block}
+.stat{background:linear-gradient(160deg,rgba(255,255,255,.05),rgba(255,255,255,.015));border:1px solid rgba(255,255,255,.07);border-radius:14px;padding:14px}
+.stat b{font-size:22px;display:block;background:linear-gradient(90deg,#fff,#c4b5fd);-webkit-background-clip:text;background-clip:text;color:transparent}
 .stat span{font-size:12px;color:var(--muted)}
 .chart{background:var(--card);border-radius:12px;padding:14px;margin:12px 0}
 .chart svg{width:100%;height:120px;display:block}
@@ -48,8 +62,8 @@ select,input[type=text],input[type=search]{background:var(--bg2);border:1px soli
     <button class="btn primary" id="eSave">Save</button>
   </div>
 </dialog>
-<script src="js/config.js?v=12"></script>
-<script src="js/app.js?v=12"></script>
+<script src="js/config.js?v=13"></script>
+<script src="js/app.js?v=13"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -84,15 +98,19 @@ async function aapi(path, opts = {}) {
 }
 
 function tabs() {
-  const t = [["dash","📊 Dashboard"],["review","📥 Review"],["reports","🚩 Reports"],["videos","🎬 Videos"],["comments","💬 Comments"],["users","👥 Users"],["settings","🎛️ Settings"],["activity","🛡️ Activity"],["setup","⚙️ Setup"]];
-  return `<div class="tabs">${t.map(([k,l]) => `<button class="tab${tab===k?" active":""}" data-tab="${k}">${l}</button>`).join("")}</div>`;
+  const t = [["dash","📊","Dashboard"],["review","📥","Review"],["reports","🚩","Reports"],["videos","🎬","Videos"],["cats","🗂️","Categories"],["comments","💬","Comments"],["users","👥","Users"],["settings","🎛️","Settings"],["activity","🛡️","Activity"],["system","🖥️","System"],["setup","⚙️","Setup"]];
+  return `<aside class="side">
+    <div class="side-logo">👑 Super Admin</div>
+    ${t.map(([k,i,l]) => `<button class="stab${tab===k?" active":""}" data-tab="${k}"><span class="si">${i}</span>${l}</button>`).join("")}
+    <a class="side-link" href="index.html">🌐 View site</a>
+  </aside>`;
 }
 function bindTabs() {
-  content.querySelectorAll(".tab").forEach(b => b.onclick = () => { tab = b.dataset.tab; boot(); });
+  content.querySelectorAll(".stab").forEach(b => b.onclick = () => { tab = b.dataset.tab; boot(); });
 }
 
 async function boot() {
-  content.innerHTML = tabs() + `<div id="pane"></div>`;
+  content.innerHTML = `<div class="shell">${tabs()}<div id="pane" class="main"></div></div>`;
   bindTabs();
   const pane = $("#pane");
   if (tab === "dash") return paneDash(pane);
@@ -103,6 +121,8 @@ async function boot() {
   if (tab === "users") return paneUsers(pane);
   if (tab === "settings") return paneSettings(pane);
   if (tab === "activity") return paneActivity(pane);
+  if (tab === "cats") return paneCats(pane);
+  if (tab === "system") return paneSystem(pane);
   return paneSetup(pane);
 }
 
@@ -125,7 +145,12 @@ async function paneDash(pane) {
   try { st = await aapi("/api/admin/stats"); }
   catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
   const t = st.totals;
-  pane.innerHTML = `
+  let sys = null;
+  try { sys = await aapi("/api/admin/system"); } catch (e) {}
+  const alerts = sys ? `
+    ${sys.pending_review ? `<div class="panel" style="border-color:#f59e0b"><b>📥 ${sys.pending_review} upload(s)</b> waiting in Review — <a href="#" data-go="review" style="color:var(--accent)">open Review</a></div>` : ""}
+    ${sys.open_reports ? `<div class="panel" style="border-color:#ef4444"><b>🚩 ${sys.open_reports} open report(s)</b> — <a href="#" data-go="reports" style="color:var(--accent)">open Reports</a></div>` : ""}` : "";
+  pane.innerHTML = alerts + `
     <div class="stat-grid">
       <div class="stat"><b>${t.videos}</b><span>🎬 Videos</span></div>
       <div class="stat"><b>${fmtViews(t.views)}</b><span>👁️ Total views</span></div>
@@ -143,9 +168,12 @@ async function paneDash(pane) {
     <div class="panel"><h3>💬 Latest comments</h3>
       ${st.recent_comments.map(c => `<div class="kv"><span><b>${esc(c.user_name)}</b> on ${esc(c.video_title)}<br><small>${esc(c.body)}</small></span><small>${esc((c.created_at||"").slice(0,16).replace("T"," "))}</small></div>`).join("") || "<small>No comments yet.</small>"}
     </div>
+    ${sys ? `<div class="chart"><h3 style="margin:0 0 8px;font-size:15px">New signups — last 14 days</h3>
+      <div style="display:flex;gap:3px;align-items:flex-end;height:90px">${(() => { const mx = Math.max(1, ...sys.signups_by_day.map(d => d.signups)); return sys.signups_by_day.map(d => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px" title="${d.day}: ${d.signups}"><div style="width:100%;max-width:24px;height:${Math.max(3, Math.round(d.signups / mx * 64))}px;background:linear-gradient(180deg,#34d399,#0ea5e9);border-radius:4px"></div><small style="font-size:9px;color:var(--muted)">${d.day.slice(5)}</small></div>`).join(""); })()}</div></div>` : ""}
     <div class="panel"><h3>👥 Newest users</h3>
       ${st.recent_users.map(u => `<div class="kv"><span>${esc(u.name)}<br><small>${esc(u.email)}</small></span><small>${esc((u.created_at||"").slice(0,10))}</small></div>`).join("") || "<small>No users yet.</small>"}
     </div>`;
+  pane.querySelectorAll("[data-go]").forEach(a => a.onclick = e => { e.preventDefault(); tab = a.dataset.go; boot(); });
 }
 
 /* ---------------- Reports ---------------- */
@@ -287,6 +315,7 @@ async function loadVideos() {
       <td><span class="pill ${v.visibility === "published" ? "pub" : "unpub"}">${v.visibility}</span><br><small style="color:var(--muted)">${v.status}</small></td>
       <td style="white-space:nowrap">
         <button class="btn sm" data-act="toggle">${v.visibility === "published" ? "Unpublish" : "Publish"}</button>
+        <button class="btn sm" data-act="feat" title="Feature on homepage">${v.featured ? "⭐" : "☆"}</button>
         <button class="btn sm" data-act="stats">📊 Stats</button>
         <button class="btn sm" data-act="edit">Edit</button>
         <button class="btn sm danger" data-act="del">✕</button>
@@ -294,9 +323,10 @@ async function loadVideos() {
     tr.querySelector("[data-id]").onchange = e => { e.target.checked ? vsel.add(v.id) : vsel.delete(v.id); loadVideos(); };
     const acts = tr.querySelectorAll("[data-act]");
     acts[0].onclick = async () => { await aapi(`/api/admin/videos/${v.id}`, { method: "PATCH", body: JSON.stringify({ visibility: v.visibility === "published" ? "unpublished" : "published" }) }); loadVideos(); };
-    acts[1].onclick = () => openStats(v);
-    acts[2].onclick = () => openEdit(v);
-    acts[3].onclick = async () => { if (!confirm(`Remove "${v.title}" from the website?\n\nThe file in your Telegram channel stays untouched.`)) return; await aapi(`/api/admin/videos/${v.id}`, { method: "DELETE" }); loadVideos(); };
+    acts[1].onclick = async () => { await aapi(`/api/admin/videos/${v.id}`, { method: "PATCH", body: JSON.stringify({ featured: !v.featured }) }); loadVideos(); };
+    acts[2].onclick = () => openStats(v);
+    acts[3].onclick = () => openEdit(v);
+    acts[4].onclick = async () => { if (!confirm(`Remove "${v.title}" from the website?\n\nThe file in your Telegram channel stays untouched.`)) return; await aapi(`/api/admin/videos/${v.id}`, { method: "DELETE" }); loadVideos(); };
     tbl.appendChild(tr);
   });
   box.appendChild(tbl);
@@ -358,6 +388,83 @@ async function paneUsers(pane) {
   });
 }
 
+/* ---------------- Categories ---------------- */
+async function paneCats(pane) {
+  pane.innerHTML = "<p>Loading…</p>";
+  let cats;
+  try { cats = await (await fetch(API + "/api/categories")).json(); }
+  catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  pane.innerHTML = `
+    <div class="panel"><h3>🗂️ Categories (${cats.length})</h3>
+      <div style="display:flex;gap:8px;margin-bottom:12px">
+        <input id="catName" placeholder="New category name…" style="flex:1">
+        <button class="btn primary" id="catAdd">+ Add</button>
+      </div>
+      ${cats.map(c => `<div class="admin-row">
+        <div class="grow"><b>${esc(c.name)}</b> <small>· ${c.count} video(s) · /${esc(c.slug)}</small></div>
+        <div class="row-actions">
+          <button class="btn" data-ren="${c.id}" data-cur="${esc(c.name)}">Rename</button>
+          ${c.slug !== "uncategorized" ? `<button class="btn danger" data-delcat="${c.id}">Delete</button>` : ""}
+        </div></div>`).join("")}
+      <p style="color:var(--muted);font-size:12px">Deleting a category moves its videos to Uncategorized.</p>
+    </div>`;
+  $("#catAdd").onclick = async () => {
+    const name = $("#catName").value.trim(); if (!name) return;
+    try { await aapi("/api/admin/categories", { method: "POST", body: JSON.stringify({ name }) }); paneCats(pane); }
+    catch (e) { alert(e.message); }
+  };
+  pane.querySelectorAll("[data-ren]").forEach(b => b.onclick = async () => {
+    const name = prompt("New name:", b.dataset.cur); if (!name || name === b.dataset.cur) return;
+    try { await aapi("/api/admin/categories/" + b.dataset.ren, { method: "PATCH", body: JSON.stringify({ name }) }); paneCats(pane); }
+    catch (e) { alert(e.message); }
+  });
+  pane.querySelectorAll("[data-delcat]").forEach(b => b.onclick = async () => {
+    if (!confirm("Delete this category? Its videos move to Uncategorized.")) return;
+    try { await aapi("/api/admin/categories/" + b.dataset.delcat, { method: "DELETE" }); paneCats(pane); }
+    catch (e) { alert(e.message); }
+  });
+}
+
+/* ---------------- System ---------------- */
+async function paneSystem(pane) {
+  pane.innerHTML = "<p>Loading…</p>";
+  let sys, tg;
+  try { sys = await aapi("/api/admin/system"); tg = await aapi("/api/admin/status"); }
+  catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  pane.innerHTML = `
+    <div class="stat-grid">
+      <div class="stat"><b>${tg.connected ? "🟢" : "🔴"}</b><span>Telegram ${tg.connected ? "connected" : "offline"}</span></div>
+      <div class="stat"><b>${sys.db_size_mb} MB</b><span>🗄️ Database size</span></div>
+      <div class="stat"><b>${sys.disk_free_gb} GB</b><span>💾 Disk free of ${sys.disk_total_gb} GB</span></div>
+      <div class="stat"><b>${sys.pending_review}</b><span>📥 Pending review</span></div>
+      <div class="stat"><b>${sys.open_reports}</b><span>🚩 Open reports</span></div>
+    </div>
+    <div class="panel"><h3>💾 Backup & export</h3>
+      <p style="color:var(--muted);font-size:13px">Download a full copy of the site database, or export lists as CSV (opens in Excel/Sheets).</p>
+      <div style="display:flex;gap:8px;flex-wrap:wrap">
+        <button class="btn primary" id="dlBackup">⬇️ Download DB backup</button>
+        <button class="btn" id="dlUsers">⬇️ Users CSV</button>
+        <button class="btn" id="dlVideos">⬇️ Videos CSV</button>
+      </div>
+    </div>
+    <div class="panel"><h3>ℹ️ About</h3>
+      <div class="kv"><span>Version</span><b>StreamHub v9 · Super Admin</b></div>
+      <div class="kv"><span>Telegram account</span><small>${esc(tg.account || "—")}</small></div>
+      <div class="kv"><span>Channel</span><small>${tg.channel_id ? "linked" : "not set"}</small></div>
+    </div>`;
+  const dl = async (path, fname) => {
+    const res = await fetch(API + path, { headers: { "X-Admin-Token": token } });
+    if (!res.ok) { alert("Download failed"); return; }
+    const blob = await res.blob();
+    const a = document.createElement("a");
+    a.href = URL.createObjectURL(blob); a.download = fname; a.click();
+    setTimeout(() => URL.revokeObjectURL(a.href), 4000);
+  };
+  $("#dlBackup").onclick = () => dl("/api/admin/backup", "streamhub-backup.db");
+  $("#dlUsers").onclick = () => dl("/api/admin/export/users", "users.csv");
+  $("#dlVideos").onclick = () => dl("/api/admin/export/videos", "videos.csv");
+}
+
 /* ---------------- Settings ---------------- */
 async function paneSettings(pane) {
   pane.innerHTML = "<p>Loading…</p>";
@@ -378,6 +485,13 @@ async function paneSettings(pane) {
           <option value="1" ${st.moderation_enabled === "1" ? "selected" : ""}>On — uploads wait in Review before going public</option>
           <option value="0" ${st.moderation_enabled === "0" ? "selected" : ""}>Off — uploads go public immediately</option>
         </select></div>
+      <div class="field"><label>📣 Announcement bar (empty = hidden)</label>
+        <input id="setAnn" value="${esc(st.announcement || "")}" placeholder="e.g. 🎉 New videos every day — join us!"></div>
+      <div class="field"><label>🛠️ Maintenance mode</label>
+        <select id="setMaint">
+          <option value="0" ${st.maintenance_mode !== "1" ? "selected" : ""}>Off — site is open</option>
+          <option value="1" ${st.maintenance_mode === "1" ? "selected" : ""}>On — visitors see a maintenance page (admin still works)</option>
+        </select></div>
       <div class="error" id="setErr" style="display:none"></div>
       <div class="ok" id="setOk" style="display:none"></div>
       <button class="btn primary" id="setSave">Save settings</button>
@@ -388,6 +502,8 @@ async function paneSettings(pane) {
         site_name: $("#setName").value.trim() || "StreamHub",
         uploads_enabled: $("#setUploads").value,
         moderation_enabled: $("#setMod").value,
+        announcement: $("#setAnn").value.trim(),
+        maintenance_mode: $("#setMaint").value,
       }) });
       $("#setOk").textContent = "✅ Saved. The new site name applies on next page load.";
       $("#setOk").style.display = "";

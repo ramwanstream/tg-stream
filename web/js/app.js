@@ -95,6 +95,17 @@ function renderHeader(active) {
       location.reload();
     }
   });
+  showAnnouncement();
+}
+
+function showAnnouncement() {
+  const msg = (localStorage.getItem("announcement") || "").trim();
+  if (!msg || sessionStorage.getItem("ann_dismissed") === msg) return;
+  const bar = document.createElement("div");
+  bar.className = "announce";
+  bar.innerHTML = `<span>${esc(msg)}</span><button aria-label="Dismiss">✕</button>`;
+  bar.querySelector("button").onclick = () => { sessionStorage.setItem("ann_dismissed", msg); bar.remove(); };
+  document.body.insertBefore(bar, document.body.firstChild);
 }
 
 function renderFooter() {

@@ -7,4 +7,5 @@ const API = ""; // same origin as the backend (empty = this site). Change only i
 fetch("/api/settings").then(r => r.json()).then(s => {
   if (s.site_name) localStorage.setItem("site_name", s.site_name);
   localStorage.setItem("uploads_enabled", s.uploads_enabled ? "1" : "0");
+  localStorage.setItem("announcement", s.announcement || "");
 }).catch(() => {});

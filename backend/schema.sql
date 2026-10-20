@@ -146,3 +146,8 @@ CREATE TABLE IF NOT EXISTS reports (
   created_at TEXT NOT NULL DEFAULT (datetime('now'))
 );
 CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at DESC);
+
+-- v9: announcement banner + maintenance mode defaults
+INSERT OR IGNORE INTO settings (key, value) VALUES
+  ('announcement', ''),
+  ('maintenance_mode', '0');
