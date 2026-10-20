@@ -4,15 +4,15 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Library</title>
-<link rel="stylesheet" href="css/style.css?v=13">
+<link rel="stylesheet" href="css/style.css?v=14">
 </head>
 <body>
 <header class="top"></header>
 <div class="wrap" id="content"></div>
 <div class="wrap"><div class="adslot" data-ad="library_top"></div></div>
-<script src="js/config.js?v=13"></script>
-<script src="js/app.js?v=13"></script>
-<script src="js/ads.js?v=13"></script>
+<script src="js/config.js?v=14"></script>
+<script src="js/app.js?v=14"></script>
+<script src="js/ads.js?v=14"></script>
 <script>
 renderHeader("library");
 renderFooter();
@@ -64,7 +64,16 @@ function renderAuth() {
 }
 
 async function renderLibrary() {
+  const myName = localStorage.getItem("name") || "User";
   content.innerHTML = `
+    <div class="profile-hero">
+      <div class="profile-av">${esc(myName[0].toUpperCase())}</div>
+      <div class="profile-info">
+        <h2>${esc(myName)}</h2>
+        <div class="profile-stats" id="profileStats"><span>Loading stats…</span></div>
+      </div>
+      <button class="btn" id="signOutBtn">Sign out</button>
+    </div>
     <div class="section-title">My uploads <a class="btn" href="upload.html" style="margin-left:8px">＋ Upload</a></div>
     <div id="upPending"></div>
     <div class="grid" id="myvids"></div>
@@ -72,6 +81,24 @@ async function renderLibrary() {
     <div class="section-title">My playlists <button class="btn" id="newPl" style="margin-left:8px">+ New</button></div>
     <div id="playlists"></div>
     <div class="section-title">Liked videos</div><div class="grid" id="liked"></div>`;
+  $("#signOutBtn").onclick = () => {
+    if (confirm("Sign out of " + SITE_NAME + "?")) {
+      localStorage.removeItem("token"); localStorage.removeItem("name"); location.reload();
+    }
+  };
+  (async () => {
+    try {
+      const [me, likes, pls, hist, up2] = await Promise.all([
+        api("/api/auth/me"), api("/api/likes"), api("/api/playlists"),
+        api("/api/history"), api("/api/me/uploads")]);
+      $("#profileStats").innerHTML =
+        `<span>📤 <b>${(up2.videos || []).length}</b> uploads</span>` +
+        `<span>❤️ <b>${(likes || []).length}</b> liked</span>` +
+        `<span>📂 <b>${(pls || []).length}</b> playlists</span>` +
+        `<span>🕘 <b>${(hist || []).length}</b> watched</span>` +
+        `<span>📅 Joined <b>${esc((me.created_at || "").slice(0, 10))}</b></span>`;
+    } catch (e) { $("#profileStats").innerHTML = ""; }
+  })();
   try {
     const up = await api("/api/me/uploads");
     const pend = $("#upPending");

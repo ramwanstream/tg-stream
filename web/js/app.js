@@ -48,6 +48,19 @@ function esc(s) {
     ({ "&": "&amp;", "<": "&lt;", ">": "&gt;", '"': "&quot;", "'": "&#39;" }[c]));
 }
 
+function showToast(msg) {
+  let t = $("#toast");
+  if (!t) {
+    t = document.createElement("div");
+    t.id = "toast"; t.className = "toast";
+    document.body.appendChild(t);
+  }
+  t.textContent = msg;
+  t.classList.add("show");
+  clearTimeout(t._h);
+  t._h = setTimeout(() => t.classList.remove("show"), 2400);
+}
+
 function videoCard(v) {
   const a = document.createElement("a");
   a.className = "card";
@@ -57,6 +70,8 @@ function videoCard(v) {
       <div class="thumb-ph">▶</div>
       ${v.thumb_url ? `<img src="${esc(v.thumb_url)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : ""}
       ${v.duration ? `<span class="badge-dur">${fmtDur(v.duration)}</span>` : ""}
+      ${v.resume_position && v.duration && v.resume_position > 5 && v.resume_position < v.duration - 10
+        ? `<span class="cwbar"><i style="width:${Math.round(v.resume_position / v.duration * 100)}%"></i></span>` : ""}
     </div>
     <h3>${esc(v.title)}</h3>
     <div class="meta">${fmtViews(v.view_count)} · ${timeAgo(v.published_at)}</div>`;
@@ -72,7 +87,9 @@ function renderHeader(active) {
       <a class="logo" href="index.html">${esc(SITE_NAME)}</a>
       <form class="search" id="searchForm">
         <input id="searchInput" type="search" placeholder="Search videos…" autocomplete="off">
+        <div class="suggest" id="suggest" style="display:none"></div>
       </form>
+      <button class="theme-btn" id="themeBtn" title="Theme">${document.documentElement.dataset.theme === "light" ? "🌙" : "☀️"}</button>
       <a class="navlink ${active === "library" ? "active" : ""}" href="library.html">Library</a>
       ${UPLOADS_ON ? `<a class="navlink upload-link" href="upload.html">＋ Upload</a>` : ""}
       ${logged
@@ -87,6 +104,33 @@ function renderHeader(active) {
     const q = $("#searchInput").value.trim();
     location.href = "index.html" + (q ? "?q=" + encodeURIComponent(q) : "");
   });
+  $("#themeBtn").onclick = () => {
+    const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
+    document.documentElement.dataset.theme = next;
+    localStorage.setItem("theme", next);
+    $("#themeBtn").textContent = next === "light" ? "🌙" : "☀️";
+  };
+  // search autocomplete
+  const sInput = $("#searchInput"), sBox = $("#suggest");
+  let sDeb;
+  sInput.addEventListener("input", () => {
+    clearTimeout(sDeb);
+    const q = sInput.value.trim();
+    if (q.length < 2) { sBox.style.display = "none"; return; }
+    sDeb = setTimeout(async () => {
+      try {
+        const d = await api("/api/videos?q=" + encodeURIComponent(q) + "&per_page=6");
+        if (!d.items.length) { sBox.style.display = "none"; return; }
+        sBox.innerHTML = d.items.map(v => `
+          <a class="sug" href="watch.html?v=${v.id}">
+            ${v.thumb_url ? `<img src="${esc(v.thumb_url)}" alt="">` : `<span class="sugph">▶</span>`}
+            <span class="sugt"><b>${esc(v.title)}</b><small>${fmtViews(v.view_count)}</small></span>
+          </a>`).join("");
+        sBox.style.display = "";
+      } catch (e) { sBox.style.display = "none"; }
+    }, 300);
+  });
+  document.addEventListener("click", e => { if (!sf.contains(e.target)) sBox.style.display = "none"; });
   const ab = $("#avatarBtn");
   if (ab) ab.addEventListener("click", () => {
     if (confirm("Sign out of " + SITE_NAME + "?")) {

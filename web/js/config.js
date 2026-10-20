@@ -1,6 +1,7 @@
 /* Site settings — the admin can rename the site in Admin → Settings;
    the public name is fetched from /api/settings and cached for instant paint. */
 const SITE_NAME = localStorage.getItem("site_name") || "StreamHub";
+document.documentElement.dataset.theme = localStorage.getItem("theme") || "dark";
 const UPLOADS_ON = localStorage.getItem("uploads_enabled") !== "0";
 const API = ""; // same origin as the backend (empty = this site). Change only if API is hosted separately.
 

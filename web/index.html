@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>StreamHub</title>
-<link rel="stylesheet" href="css/style.css?v=13">
+<link rel="stylesheet" href="css/style.css?v=14">
 <style>
 .hero{position:relative;border-radius:16px;overflow:hidden;margin:14px 0 6px;min-height:200px;background:var(--card);display:block;color:inherit;text-decoration:none}
 .hero img{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
@@ -25,6 +25,8 @@
 <div class="wrap">
   <div class="adslot" data-ad="home_top"></div>
   <div id="hero"></div>
+  <div class="section-title" id="cwTitle" style="display:none">▶️ Continue watching</div>
+  <div class="row-scroll" id="cwRow" style="display:none"></div>
   <div class="section-title" id="featTitle" style="display:none">⭐ Featured</div>
   <div class="row-scroll" id="featRow" style="display:none"></div>
   <div class="section-title" id="trendTitle" style="display:none">🔥 Trending this week</div>
@@ -38,9 +40,9 @@
   <div class="grid" id="grid"></div>
   <button class="btn loadmore" id="moreBtn" style="display:none">Load more</button>
 </div>
-<script src="js/config.js?v=13"></script>
-<script src="js/app.js?v=13"></script>
-<script src="js/ads.js?v=13"></script>
+<script src="js/config.js?v=14"></script>
+<script src="js/app.js?v=14"></script>
+<script src="js/ads.js?v=14"></script>
 <script>
 renderHeader("home");
 renderFooter();
@@ -65,6 +67,18 @@ function renderHero(v) {
         <div class="meta">${fmtViews(v.view_count)} · ${timeAgo(v.published_at)}${v.duration ? " · " + fmtDur(v.duration) : ""}</div>
       </div>
     </a>`;
+}
+
+async function loadContinue() {
+  if (!localStorage.getItem("token")) return;
+  const row = $("#cwRow"), title = $("#cwTitle");
+  try {
+    const items = await api("/api/history");
+    const cont = (items || []).filter(v => v.resume_position > 10 && v.duration && v.resume_position < v.duration - 15);
+    if (!cont.length) return;
+    cont.slice(0, 12).forEach(v => row.appendChild(videoCard(v)));
+    row.style.display = ""; title.style.display = "";
+  } catch (e) {}
 }
 
 async function loadFeatured() {
@@ -161,7 +175,7 @@ async function load() {
   }
 }
 moreBtn.onclick = () => { page++; load(); };
-loadCats(); load(); loadTrending(); loadFeatured();
+loadCats(); load(); loadTrending(); loadFeatured(); loadContinue();
 </script>
 </body>
 </html>
