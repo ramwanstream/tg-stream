@@ -23,6 +23,7 @@
 <body>
 <header class="top"></header>
 <div class="wrap">
+  <div class="adslot" data-ad="home_top"></div>
   <div id="hero"></div>
   <div class="section-title" id="trendTitle" style="display:none">🔥 Trending this week</div>
   <div class="row-scroll" id="trendRow" style="display:none"></div>
@@ -37,9 +38,11 @@
 </div>
 <script src="js/config.js"></script>
 <script src="js/app.js"></script>
+<script src="js/ads.js"></script>
 <script>
 renderHeader("home");
 renderFooter();
+renderAds();
 const params = new URLSearchParams(location.search);
 let q = params.get("q") || "";
 let category = "all";
@@ -125,7 +128,17 @@ async function load() {
         q ? `Nothing found for "${q}".` : "Videos from the channel will appear here automatically.");
       return;
     }
-    data.items.forEach(v => grid.appendChild(videoCard(v)));
+    data.items.forEach((v, i) => {
+      grid.appendChild(videoCard(v));
+      // in-feed native ad after every 6th video
+      if ((i + 1) % 6 === 0) {
+        const ad = document.createElement("div");
+        ad.className = "adslot"; ad.dataset.ad = "home_feed";
+        ad.style.gridColumn = "1 / -1";
+        grid.appendChild(ad);
+      }
+    });
+    renderAds(grid);
     if (data.total > page * data.per_page) { moreBtn.style.display = "block"; }
   } catch (e) {
     if (page === 1) { showEmpty(grid, "⚠️", "Could not load videos", e.message); renderHero(null); }

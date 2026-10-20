@@ -143,6 +143,10 @@ video.player { width: 100%; aspect-ratio: 16/9; display: block; background: #000
 /* states */
 .empty { text-align: center; color: var(--muted); padding: 60px 20px; }
 .empty .big { font-size: 40px; margin-bottom: 10px; }
+/* ad slots: centered, never break layout when empty */
+.adslot { display: flex; justify-content: center; align-items: center; margin: 14px auto; max-width: 100%; overflow: hidden; }
+.adslot:empty { margin: 0; }
+.adslot iframe { max-width: 100%; }
 .skel { background: linear-gradient(90deg, var(--card) 25%, #232330 50%, var(--card) 75%); background-size: 200% 100%; animation: sh 1.2s infinite; border-radius: var(--radius); }
 @keyframes sh { to { background-position: -200% 0; } }
 .loadmore { display: block; margin: 0 auto 40px; }

@@ -21,6 +21,7 @@
 <div class="wrap" id="content"></div>
 <script src="js/config.js"></script>
 <script src="js/app.js"></script>
+<script src="js/ads.js"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -56,6 +57,7 @@ async function load() {
       <button class="btn" id="plBtn">➕ Save</button>
       <button class="btn" id="shareBtn">🔗 Share</button>
     </div>
+    <div class="adslot" data-ad="watch_top"></div>
     ${v.description ? `<div class="desc">${esc(v.description)}</div>` : ""}
     <div class="section-title">💬 Comments (<span id="ccount">${v.comment_count || 0}</span>)</div>
     <div class="comments">
@@ -66,6 +68,7 @@ async function load() {
       ${logged ? "" : `<p style="color:var(--muted);font-size:13px"><a href="library.html" style="color:var(--accent)">Sign in</a> to comment.</p>`}
       <div id="clist"></div>
     </div>
+    <div class="adslot" data-ad="watch_mid"></div>
     <div class="section-title">Related</div>
     <div class="grid" id="related"></div>`;
 
@@ -73,6 +76,7 @@ async function load() {
   const rel = $("#related");
   (v.related || []).forEach(r => rel.appendChild(videoCard(r)));
   if (!v.related || !v.related.length) rel.innerHTML = '<p style="color:var(--muted)">No related videos.</p>';
+  renderAds(content);
 
   // resume where left off
   if (resume > 10) {
