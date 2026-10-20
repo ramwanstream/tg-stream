@@ -4,7 +4,7 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Admin · StreamHub</title>
-<link rel="stylesheet" href="css/style.css?v=9">
+<link rel="stylesheet" href="css/style.css?v=10">
 <style>
 .tabs{display:flex;gap:6px;overflow-x:auto;padding:4px 0 12px;position:sticky;top:0;background:var(--bg);z-index:5}
 .tab{white-space:nowrap;border:1px solid #2a2a38;background:var(--bg2);color:var(--text);border-radius:999px;padding:8px 16px;font-size:13px;cursor:pointer}
@@ -37,6 +37,7 @@ select,input[type=text],input[type=search]{background:var(--bg2);border:1px soli
 <body>
 <header class="top"></header>
 <div class="wrap" id="content"></div>
+<dialog id="statsDlg" style="width:min(560px,94vw)"></dialog>
 <dialog id="editDlg">
   <h3 style="margin-top:0">Edit video</h3>
   <div class="field"><label>Title</label><input id="eTitle"></div>
@@ -47,8 +48,8 @@ select,input[type=text],input[type=search]{background:var(--bg2);border:1px soli
     <button class="btn primary" id="eSave">Save</button>
   </div>
 </dialog>
-<script src="js/config.js?v=9"></script>
-<script src="js/app.js?v=9"></script>
+<script src="js/config.js?v=10"></script>
+<script src="js/app.js?v=10"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -83,7 +84,7 @@ async function aapi(path, opts = {}) {
 }
 
 function tabs() {
-  const t = [["dash","📊 Dashboard"],["review","📥 Review"],["videos","🎬 Videos"],["comments","💬 Comments"],["users","👥 Users"],["setup","⚙️ Setup"]];
+  const t = [["dash","📊 Dashboard"],["review","📥 Review"],["videos","🎬 Videos"],["comments","💬 Comments"],["users","👥 Users"],["settings","🎛️ Settings"],["activity","🛡️ Activity"],["setup","⚙️ Setup"]];
   return `<div class="tabs">${t.map(([k,l]) => `<button class="tab${tab===k?" active":""}" data-tab="${k}">${l}</button>`).join("")}</div>`;
 }
 function bindTabs() {
@@ -99,6 +100,8 @@ async function boot() {
   if (tab === "review") return paneReview(pane);
   if (tab === "comments") return paneComments(pane);
   if (tab === "users") return paneUsers(pane);
+  if (tab === "settings") return paneSettings(pane);
+  if (tab === "activity") return paneActivity(pane);
   return paneSetup(pane);
 }
 
@@ -253,14 +256,16 @@ async function loadVideos() {
       <td><span class="pill ${v.visibility === "published" ? "pub" : "unpub"}">${v.visibility}</span><br><small style="color:var(--muted)">${v.status}</small></td>
       <td style="white-space:nowrap">
         <button class="btn sm" data-act="toggle">${v.visibility === "published" ? "Unpublish" : "Publish"}</button>
+        <button class="btn sm" data-act="stats">📊 Stats</button>
         <button class="btn sm" data-act="edit">Edit</button>
         <button class="btn sm danger" data-act="del">✕</button>
       </td>`;
     tr.querySelector("[data-id]").onchange = e => { e.target.checked ? vsel.add(v.id) : vsel.delete(v.id); loadVideos(); };
     const acts = tr.querySelectorAll("[data-act]");
     acts[0].onclick = async () => { await aapi(`/api/admin/videos/${v.id}`, { method: "PATCH", body: JSON.stringify({ visibility: v.visibility === "published" ? "unpublished" : "published" }) }); loadVideos(); };
-    acts[1].onclick = () => openEdit(v);
-    acts[2].onclick = async () => { if (!confirm(`Remove "${v.title}" from the website?\n\nThe file in your Telegram channel stays untouched.`)) return; await aapi(`/api/admin/videos/${v.id}`, { method: "DELETE" }); loadVideos(); };
+    acts[1].onclick = () => openStats(v);
+    acts[2].onclick = () => openEdit(v);
+    acts[3].onclick = async () => { if (!confirm(`Remove "${v.title}" from the website?\n\nThe file in your Telegram channel stays untouched.`)) return; await aapi(`/api/admin/videos/${v.id}`, { method: "DELETE" }); loadVideos(); };
     tbl.appendChild(tr);
   });
   box.appendChild(tbl);
@@ -291,9 +296,81 @@ async function paneUsers(pane) {
   try { d = await aapi("/api/admin/users?per_page=50"); }
   catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
   pane.innerHTML = `<div class="panel"><h3>👥 Users (${d.total})</h3><div style="overflow-x:auto"><table class="tbl">
-    <tr><th>Name</th><th>Email</th><th>Joined</th><th>❤️</th><th>💬</th></tr>
-    ${d.items.map(u => `<tr><td><b>${esc(u.name)}</b></td><td>${esc(u.email)}</td><td>${esc((u.created_at || "").slice(0, 10))}</td><td>${u.likes}</td><td>${u.comments}</td></tr>`).join("")}
+    <tr><th>User</th><th>Joined</th><th>📤</th><th>❤️</th><th>💬</th><th>Role</th><th>Status</th><th>Actions</th></tr>
+    ${d.items.map(u => `<tr>
+      <td><b>${esc(u.name)}</b><br><small style="color:var(--muted)">${esc(u.email)}</small></td>
+      <td>${esc((u.created_at || "").slice(0, 10))}</td><td>${u.uploads}</td><td>${u.likes}</td><td>${u.comments}</td>
+      <td>${u.role === "admin" ? "👑 admin" : "user"}</td>
+      <td>${u.banned ? '<span style="color:var(--danger)">🚫 banned</span>' : '<span style="color:var(--ok)">active</span>'}</td>
+      <td style="white-space:nowrap">
+        <button class="btn" data-ban="${u.id}" data-cur="${u.banned ? 1 : 0}" style="padding:5px 10px;font-size:12px">${u.banned ? "Unban" : "Ban"}</button>
+        <button class="btn" data-role="${u.id}" data-cur="${u.role}" style="padding:5px 10px;font-size:12px">${u.role === "admin" ? "Make user" : "Make admin"}</button>
+      </td></tr>`).join("")}
     </table></div></div>`;
+  pane.querySelectorAll("[data-ban]").forEach(b => b.onclick = async () => {
+    const banned = b.dataset.cur !== "1";
+    if (banned && !confirm("Ban this user? They will not be able to log in, upload or comment.")) return;
+    await aapi("/api/admin/users/" + b.dataset.ban, { method: "PATCH", body: JSON.stringify({ banned }) });
+    paneUsers(pane);
+  });
+  pane.querySelectorAll("[data-role]").forEach(b => b.onclick = async () => {
+    const role = b.dataset.cur === "admin" ? "user" : "admin";
+    await aapi("/api/admin/users/" + b.dataset.role, { method: "PATCH", body: JSON.stringify({ role }) });
+    paneUsers(pane);
+  });
+}
+
+/* ---------------- Settings ---------------- */
+async function paneSettings(pane) {
+  pane.innerHTML = "<p>Loading…</p>";
+  let st;
+  try { st = await aapi("/api/admin/settings"); }
+  catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  pane.innerHTML = `
+    <div class="panel"><h3>🎛️ Site settings</h3>
+      <div class="field"><label>Site name</label>
+        <input id="setName" value="${esc(st.site_name || "StreamHub")}"></div>
+      <div class="field"><label>User uploads</label>
+        <select id="setUploads">
+          <option value="1" ${st.uploads_enabled === "1" ? "selected" : ""}>Enabled — anyone with an account can upload</option>
+          <option value="0" ${st.uploads_enabled === "0" ? "selected" : ""}>Disabled</option>
+        </select></div>
+      <div class="field"><label>Upload moderation</label>
+        <select id="setMod">
+          <option value="1" ${st.moderation_enabled === "1" ? "selected" : ""}>On — uploads wait in Review before going public</option>
+          <option value="0" ${st.moderation_enabled === "0" ? "selected" : ""}>Off — uploads go public immediately</option>
+        </select></div>
+      <div class="error" id="setErr" style="display:none"></div>
+      <div class="ok" id="setOk" style="display:none"></div>
+      <button class="btn primary" id="setSave">Save settings</button>
+    </div>`;
+  $("#setSave").onclick = async () => {
+    try {
+      await aapi("/api/admin/settings", { method: "PATCH", body: JSON.stringify({
+        site_name: $("#setName").value.trim() || "StreamHub",
+        uploads_enabled: $("#setUploads").value,
+        moderation_enabled: $("#setMod").value,
+      }) });
+      $("#setOk").textContent = "✅ Saved. The new site name applies on next page load.";
+      $("#setOk").style.display = "";
+    } catch (e) { $("#setErr").textContent = e.message; $("#setErr").style.display = ""; }
+  };
+}
+
+/* ---------------- Activity log ---------------- */
+async function paneActivity(pane) {
+  pane.innerHTML = "<p>Loading…</p>";
+  let d;
+  try { d = await aapi("/api/admin/activity?per_page=60"); }
+  catch (e) { pane.innerHTML = `<p class="error">${esc(e.message)}</p>`; return; }
+  const icons = { videos_publish: "🟢", videos_unpublish: "🟡", videos_delete: "🗑️", user_ban: "🚫", user_unban: "✅", user_role: "👑", settings: "🎛️" };
+  pane.innerHTML = `<div class="panel"><h3>🛡️ Activity log (${d.total})</h3>
+    ${d.items.length ? d.items.map(a => `<div class="admin-row">
+      <div style="font-size:20px">${icons[a.action] || "•"}</div>
+      <div class="grow"><b>${esc(a.action)}</b> <small>${esc(a.target)} ${esc(a.detail)}</small></div>
+      <small style="color:var(--muted)">${esc((a.created_at || "").slice(0, 16))}</small>
+    </div>`).join("") : '<p style="color:var(--muted)">No activity yet.</p>'}
+    </div>`;
 }
 
 /* ---------------- Setup (Telegram/channel) ---------------- */
@@ -376,6 +453,32 @@ async function paneSetup(pane) {
 
 /* ---------------- edit dialog ---------------- */
 let editingId = null;
+async function openStats(v) {
+  const dlg = $("#statsDlg");
+  dlg.innerHTML = `<h3 style="margin:0 0 10px">📊 ${esc(v.title)}</h3><p style="color:var(--muted)">Loading…</p>`;
+  dlg.showModal();
+  try {
+    const st = await aapi(`/api/admin/videos/${v.id}/stats`);
+    const mx = Math.max(...st.views_by_day.map(d => d.views), 1);
+    const bars = st.views_by_day.map(d =>
+      `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px" title="${d.date}: ${d.views} views">
+        <div style="width:100%;max-width:26px;height:${Math.max(3, Math.round(d.views / mx * 90))}px;background:var(--grad,#7c5cff);background:linear-gradient(180deg,#22d3ee,#8b5cf6);border-radius:5px"></div>
+        <small style="font-size:9px;color:var(--muted)">${d.date.slice(5)}</small></div>`).join("");
+    dlg.innerHTML = `
+      <h3 style="margin:0 0 12px">📊 ${esc(v.title)}</h3>
+      <div class="stat-grid" style="grid-template-columns:repeat(4,1fr)">
+        <div class="stat"><b>${fmtViews(st.video.view_count)}</b><span>👁️ Total views</span></div>
+        <div class="stat"><b>${st.likes}</b><span>❤️ Likes</span></div>
+        <div class="stat"><b>${st.comments}</b><span>💬 Comments</span></div>
+        <div class="stat"><b>${st.in_playlists}</b><span>📂 In playlists</span></div>
+      </div>
+      <p style="color:var(--muted);font-size:12px;margin:6px 0 4px">Views — last 14 days</p>
+      <div style="display:flex;gap:3px;align-items:flex-end;height:120px">${bars}</div>
+      <div style="text-align:right;margin-top:14px"><button class="btn primary" onclick="document.getElementById('statsDlg').close()">Close</button></div>`;
+  } catch (e) {
+    dlg.innerHTML = `<p class="error">${esc(e.message)}</p><button class="btn" onclick="document.getElementById('statsDlg').close()">Close</button>`;
+  }
+}
 function openEdit(v) {
   editingId = v.id;
   $("#eTitle").value = v.title;

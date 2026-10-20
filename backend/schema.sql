@@ -114,3 +114,23 @@ CREATE TABLE IF NOT EXISTS pending_uploads (
 );
 CREATE INDEX IF NOT EXISTS idx_pending_uploads_user ON pending_uploads(user_id, created_at DESC);
 CREATE INDEX IF NOT EXISTS idx_pending_uploads_status ON pending_uploads(status);
+
+-- v7: site settings (admin-editable) + admin activity log
+CREATE TABLE IF NOT EXISTS settings (
+  key TEXT PRIMARY KEY,
+  value TEXT NOT NULL DEFAULT ''
+);
+INSERT OR IGNORE INTO settings (key, value) VALUES
+  ('site_name', 'StreamHub'),
+  ('uploads_enabled', '1'),
+  ('moderation_enabled', '1');
+
+CREATE TABLE IF NOT EXISTS activity_log (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  actor TEXT NOT NULL DEFAULT 'admin',
+  action TEXT NOT NULL,
+  target TEXT NOT NULL DEFAULT '',
+  detail TEXT NOT NULL DEFAULT '',
+  created_at TEXT NOT NULL DEFAULT (datetime('now'))
+);
+CREATE INDEX IF NOT EXISTS idx_activity_time ON activity_log(created_at DESC);

@@ -69,12 +69,12 @@ function renderHeader(active) {
   const name = localStorage.getItem("name") || "?";
   $("header.top").innerHTML = `
     <div class="top-inner">
-      <a class="logo" href="index.html">${esc(SITE_NAME.replace(/(Hub)$/, ""))}<span>Hub</span></a>
+      <a class="logo" href="index.html">${esc(SITE_NAME)}</a>
       <form class="search" id="searchForm">
         <input id="searchInput" type="search" placeholder="Search videos…" autocomplete="off">
       </form>
       <a class="navlink ${active === "library" ? "active" : ""}" href="library.html">Library</a>
-      <a class="navlink upload-link" href="upload.html">＋ Upload</a>
+      ${UPLOADS_ON ? `<a class="navlink upload-link" href="upload.html">＋ Upload</a>` : ""}
       ${logged
         ? `<button class="avatar-btn" id="avatarBtn" title="${esc(name)}">${esc(name[0].toUpperCase())}</button>`
         : `<a class="navlink" href="library.html">Sign in</a>`}

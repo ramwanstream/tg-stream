@@ -131,6 +131,12 @@ def init_db():
     cols = [r["name"] for r in con.execute("PRAGMA table_info(videos)")]
     if "uploaded_by" not in cols:
         con.execute("ALTER TABLE videos ADD COLUMN uploaded_by INTEGER REFERENCES users(id)")
+    # v7: user role + ban flag
+    ucols = [r["name"] for r in con.execute("PRAGMA table_info(users)")]
+    if "role" not in ucols:
+        con.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
+    if "banned" not in ucols:
+        con.execute("ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0")
     con.commit()
     con.close()
 
@@ -188,7 +194,7 @@ def get_user_from_header(authorization: Optional[str]) -> Optional[dict]:
     try:
         payload = pyjwt.decode(authorization[7:], JWT_SECRET, algorithms=["HS256"])
         con = db()
-        r = con.execute("SELECT id, name, email, created_at FROM users WHERE id=?",
+        r = con.execute("SELECT id, name, email, created_at, role, banned FROM users WHERE id=?",
                         (payload["uid"],)).fetchone()
         con.close()
         return row_to_dict(r)
@@ -200,11 +206,39 @@ def require_user(authorization: Optional[str] = Header(None)) -> dict:
     user = get_user_from_header(authorization)
     if not user:
         raise HTTPException(401, "Login required")
+    if user.get("banned"):
+        raise HTTPException(403, "This account has been suspended")
     return user
 
 
 def optional_user(authorization: Optional[str] = Header(None)) -> Optional[dict]:
-    return get_user_from_header(authorization)
+    u = get_user_from_header(authorization)
+    if u and u.get("banned"):
+        return None
+    return u
+
+
+# ------------------------------------------------------------- v7 helpers
+
+def get_setting(key: str, default: str = "") -> str:
+    try:
+        con = db()
+        r = con.execute("SELECT value FROM settings WHERE key=?", (key,)).fetchone()
+        con.close()
+        return r["value"] if r else default
+    except Exception:
+        return default
+
+
+def log_activity(action: str, target: str = "", detail: str = "", actor: str = "admin"):
+    try:
+        con = db()
+        con.execute("INSERT INTO activity_log (actor, action, target, detail) VALUES (?,?,?,?)",
+                    (actor, action, target[:120], detail[:300]))
+        con.commit()
+        con.close()
+    except Exception:
+        pass
 
 
 def require_admin(x_admin_token: Optional[str] = Header(None)):
@@ -534,12 +568,17 @@ async def sync_channel(limit: int = 300) -> dict:
                 "SELECT id, user_id, title, description, category_id FROM pending_uploads "
                 "WHERE tg_message_id=? AND status='sent'", (msg.id,)).fetchone()
             if pu:
+                # moderation ON  -> hold as unpublished for admin review
+                # moderation OFF -> publish immediately
+                moderate = get_setting("moderation_enabled", "1") == "1"
+                vis = "unpublished" if moderate else "published"
+                pub_at = "NULL" if moderate else "datetime('now')"
                 con.execute(
-                    """INSERT INTO videos
+                    f"""INSERT INTO videos
                        (title, description, category_id, tg_channel_id, tg_message_id,
                         tg_file_unique_id, file_size, duration, mime, visibility,
                         published_at, uploaded_by)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, 'unpublished', NULL, ?)""",
+                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{vis}', {pub_at}, ?)""",
                     (pu["title"] or title, pu["description"] or "",
                      pu["category_id"] or None, tg.channel_id,
                      msg.id, attrs["unique_id"], attrs["file_size"],
@@ -893,6 +932,8 @@ def login(body: dict, request: Request):
     con.close()
     if not r or not check_password(password, r["password_hash"]):
         raise HTTPException(401, "Wrong email or password")
+    if r["banned"]:
+        raise HTTPException(403, "This account has been suspended")
     u = row_to_dict(r)
     return {"token": make_token(u["id"]),
             "user": {k: u[k] for k in ("id", "name", "email", "created_at")}}
@@ -1145,6 +1186,8 @@ async def _send_upload_to_telegram(upload_id: int):
 @app.post("/api/upload")
 async def upload_video(request: Request, user: dict = Depends(require_user)):
     """YouTube-style upload: video file + title -> Telegram channel (moderated)."""
+    if get_setting("uploads_enabled", "1") != "1":
+        raise HTTPException(403, "Uploads are currently disabled")
     if not tg.configured() or not tg.channel_id:
         raise HTTPException(503, "Uploads are not available right now")
     if not rate_limit(f"upload:{user['id']}", 5, 3600):
@@ -1287,6 +1330,7 @@ async def admin_bulk(request: Request, _: dict = Depends(require_admin)):
                     [vis, vis] + ids)
     con.commit()
     con.close()
+    log_activity(f"videos_{action}", f"videos:{','.join(str(i) for i in ids[:10])}", f"count={len(ids)}")
     return {"ok": True, "action": action, "count": len(ids)}
 
 
@@ -1361,13 +1405,106 @@ def admin_users(page: int = 1, per_page: int = 30,
     con = db()
     total = con.execute("SELECT COUNT(*) c FROM users").fetchone()["c"]
     rows = con.execute(
-        """SELECT u.id, u.name, u.email, u.created_at,
+        """SELECT u.id, u.name, u.email, u.created_at, u.role, u.banned,
                   (SELECT COUNT(*) FROM likes l WHERE l.user_id=u.id) AS likes,
-                  (SELECT COUNT(*) FROM comments c WHERE c.user_id=u.id) AS comments
+                  (SELECT COUNT(*) FROM comments c WHERE c.user_id=u.id) AS comments,
+                  (SELECT COUNT(*) FROM videos v WHERE v.uploaded_by=u.id) AS uploads
            FROM users u ORDER BY u.id DESC LIMIT ? OFFSET ?""",
         (per_page, (page - 1) * per_page)).fetchall()
     con.close()
     return {"total": total, "items": [dict(r) for r in rows]}
+
+
+@app.patch("/api/admin/users/{user_id}")
+async def admin_user_update(user_id: int, request: Request, _: None = Depends(require_admin)):
+    """Ban/unban a user or change their role."""
+    data = await request.json()
+    con = db()
+    u = con.execute("SELECT id, name, email FROM users WHERE id=?", (user_id,)).fetchone()
+    if not u:
+        con.close()
+        raise HTTPException(404, "User not found")
+    if "banned" in data:
+        con.execute("UPDATE users SET banned=? WHERE id=?", (1 if data["banned"] else 0, user_id))
+        log_action = "user_ban" if data["banned"] else "user_unban"
+        log_activity(log_action, f"user:{user_id}", f"{u['name']} <{u['email']}>")
+    if "role" in data and data["role"] in ("user", "admin"):
+        con.execute("UPDATE users SET role=? WHERE id=?", (data["role"], user_id))
+        log_activity("user_role", f"user:{user_id}", f"role -> {data['role']}")
+    con.commit()
+    con.close()
+    return {"ok": True}
+
+
+@app.get("/api/settings")
+def public_settings():
+    """Public site settings the frontend needs (name, uploads on/off)."""
+    return {"site_name": get_setting("site_name", "StreamHub"),
+            "uploads_enabled": get_setting("uploads_enabled", "1") == "1"}
+
+
+@app.get("/api/admin/settings")
+def admin_settings_get(_: None = Depends(require_admin)):
+    con = db()
+    rows = con.execute("SELECT key, value FROM settings").fetchall()
+    con.close()
+    return {r["key"]: r["value"] for r in rows}
+
+
+@app.patch("/api/admin/settings")
+async def admin_settings_update(request: Request, _: None = Depends(require_admin)):
+    data = await request.json()
+    allowed = {"site_name", "uploads_enabled", "moderation_enabled"}
+    con = db()
+    for k, v in data.items():
+        if k in allowed:
+            con.execute("INSERT INTO settings (key, value) VALUES (?,?) "
+                        "ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                        (k, str(v)[:120]))
+    con.commit()
+    con.close()
+    log_activity("settings", "", ", ".join(f"{k}={v}" for k, v in data.items() if k in allowed))
+    return {"ok": True}
+
+
+@app.get("/api/admin/activity")
+def admin_activity(page: int = 1, per_page: int = 40, _: None = Depends(require_admin)):
+    per_page = max(1, min(per_page, 100))
+    page = max(1, page)
+    con = db()
+    total = con.execute("SELECT COUNT(*) c FROM activity_log").fetchone()["c"]
+    rows = con.execute(
+        "SELECT * FROM activity_log ORDER BY id DESC LIMIT ? OFFSET ?",
+        (per_page, (page - 1) * per_page)).fetchall()
+    con.close()
+    return {"total": total, "items": [row_to_dict(r) for r in rows]}
+
+
+@app.get("/api/admin/videos/{video_id}/stats")
+def admin_video_stats(video_id: int, _: None = Depends(require_admin)):
+    """Per-video analytics: totals + last-14-days view counts."""
+    con = db()
+    v = con.execute("SELECT id, title, view_count, created_at FROM videos WHERE id=?",
+                    (video_id,)).fetchone()
+    if not v:
+        con.close()
+        raise HTTPException(404, "Video not found")
+    likes = con.execute("SELECT COUNT(*) c FROM likes WHERE video_id=?", (video_id,)).fetchone()["c"]
+    comments = con.execute("SELECT COUNT(*) c FROM comments WHERE video_id=?", (video_id,)).fetchone()["c"]
+    in_lists = con.execute("SELECT COUNT(*) c FROM playlist_items WHERE video_id=?", (video_id,)).fetchone()["c"]
+    days = con.execute(
+        """SELECT date(viewed_at) AS d, COUNT(*) AS c FROM view_events
+           WHERE video_id=? AND viewed_at >= datetime('now','-13 days')
+           GROUP BY date(viewed_at)""", (video_id,)).fetchall()
+    con.close()
+    by_day = {r["d"]: r["c"] for r in days}
+    series = []
+    for i in range(13, -1, -1):
+        d = (datetime.now(timezone.utc) - timedelta(days=i)).strftime("%Y-%m-%d")
+        series.append({"date": d, "views": by_day.get(d, 0)})
+    return {"video": row_to_dict(v), "likes": likes, "comments": comments,
+            "in_playlists": in_lists, "views_by_day": series}
+
 
 def _resolve_category(value: Optional[str]) -> int:
     con = db()
