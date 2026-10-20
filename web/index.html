@@ -47,34 +47,32 @@ let sort = "new";
 let page = 1;
 const grid = $("#grid"), moreBtn = $("#moreBtn");
 
-async function loadHero() {
-  if (q || category !== "all" || sort !== "new" || page !== 1) { $("#hero").innerHTML = ""; return; }
-  try {
-    const d = await api("/api/videos?page=1&per_page=1");
-    const v = d.items[0];
-    if (!v) return;
-    $("#hero").innerHTML = `
-      <a class="hero" href="watch.html?v=${v.id}">
-        ${v.thumb_url ? `<img src="${esc(v.thumb_url)}" alt="">` : ""}
-        <div class="grad"></div>
-        <div class="txt">
-          <div class="kicker">✨ Featured</div>
-          <h2>${esc(v.title)}</h2>
-          <div class="meta">${fmtViews(v.view_count)} · ${timeAgo(v.published_at)}${v.duration ? " · " + fmtDur(v.duration) : ""}</div>
-        </div>
-      </a>`;
-  } catch (e) {}
+function renderHero(v) {
+  const hero = $("#hero");
+  if (!v) { hero.innerHTML = ""; return; }
+  hero.innerHTML = `
+    <a class="hero" href="watch.html?v=${v.id}">
+      ${v.thumb_url ? `<img src="${esc(v.thumb_url)}" alt="" fetchpriority="high" decoding="async" onerror="this.remove()">` : ""}
+      <div class="grad"></div>
+      <div class="txt">
+        <div class="kicker">✨ Featured</div>
+        <h2>${esc(v.title)}</h2>
+        <div class="meta">${fmtViews(v.view_count)} · ${timeAgo(v.published_at)}${v.duration ? " · " + fmtDur(v.duration) : ""}</div>
+      </div>
+    </a>`;
 }
 
 async function loadTrending() {
   const row = $("#trendRow"), title = $("#trendTitle");
   if (q || category !== "all") { row.style.display = "none"; title.style.display = "none"; return; }
+  title.style.display = ""; row.style.display = "";
+  row.innerHTML = Array(4).fill('<div class="card" style="min-width:220px;max-width:220px"><div class="thumb skel"></div><div class="skel" style="height:14px;margin-top:8px"></div></div>').join("");
   try {
     const d = await api("/api/videos?sort=trending&per_page=8");
-    if (!d.items.length) return;
-    row.innerHTML = ""; title.style.display = ""; row.style.display = "";
+    if (!d.items.length) { row.style.display = "none"; title.style.display = "none"; return; }
+    row.innerHTML = "";
     d.items.forEach(v => row.appendChild(videoCard(v)));
-  } catch (e) {}
+  } catch (e) { row.style.display = "none"; title.style.display = "none"; }
 }
 
 async function loadCats() {
@@ -97,7 +95,7 @@ async function loadCats() {
   } catch (e) { /* categories optional */ }
 }
 
-function reset() { page = 1; grid.innerHTML = ""; load(); loadCats(); loadHero(); }
+function reset() { page = 1; grid.innerHTML = ""; $("#hero").innerHTML = ""; load(); loadCats(); }
 
 $$("#sorttabs .sorttab").forEach(b => b.onclick = () => {
   $$("#sorttabs .sorttab").forEach(x => x.classList.remove("active"));
@@ -107,15 +105,21 @@ $$("#sorttabs .sorttab").forEach(b => b.onclick = () => {
 
 async function load() {
   moreBtn.style.display = "none";
+  const showHero = (page === 1 && sort === "new" && !q && category === "all");
   if (page === 1) {
-    grid.innerHTML = Array(6).fill('<div><div class="thumb skel"></div><div class="skel" style="height:14px;margin-top:8px"></div></div>').join("");
+    grid.innerHTML = Array(6).fill('<div><div class="thumb skel"></div><div class="skel" style="height:14px;margin-top:8px"></div><div class="skel" style="height:12px;width:60%;margin-top:6px"></div></div>').join("");
+    if (showHero) $("#hero").innerHTML = `<div class="skel" style="min-height:200px;margin:14px 0 6px"></div>`;
   }
   try {
     const qs = new URLSearchParams({ page, per_page: 24, sort });
     if (q) qs.set("q", q);
     if (category !== "all") qs.set("category", category);
     const data = await api("/api/videos?" + qs);
-    if (page === 1) grid.innerHTML = "";
+    if (page === 1) {
+      grid.innerHTML = "";
+      // hero reuses the first video — no extra API call
+      renderHero(showHero ? data.items[0] : null);
+    }
     if (!data.items.length && page === 1) {
       showEmpty(grid, "🎬", q ? "No results" : "No videos yet",
         q ? `Nothing found for "${q}".` : "Videos from the channel will appear here automatically.");
@@ -124,11 +128,11 @@ async function load() {
     data.items.forEach(v => grid.appendChild(videoCard(v)));
     if (data.total > page * data.per_page) { moreBtn.style.display = "block"; }
   } catch (e) {
-    if (page === 1) showEmpty(grid, "⚠️", "Could not load videos", e.message);
+    if (page === 1) { showEmpty(grid, "⚠️", "Could not load videos", e.message); renderHero(null); }
   }
 }
 moreBtn.onclick = () => { page++; load(); };
-loadCats(); load(); loadHero(); loadTrending();
+loadCats(); load(); loadTrending();
 </script>
 </body>
 </html>

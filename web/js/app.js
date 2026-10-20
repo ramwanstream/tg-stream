@@ -54,7 +54,8 @@ function videoCard(v) {
   a.href = "watch.html?v=" + v.id;
   a.innerHTML = `
     <div class="thumb">
-      ${v.thumb_url ? `<img src="${esc(v.thumb_url)}" alt="" loading="lazy">` : ""}
+      <div class="thumb-ph">▶</div>
+      ${v.thumb_url ? `<img src="${esc(v.thumb_url)}" alt="" loading="lazy" decoding="async" onerror="this.remove()">` : ""}
       ${v.duration ? `<span class="badge-dur">${fmtDur(v.duration)}</span>` : ""}
     </div>
     <h3>${esc(v.title)}</h3>
