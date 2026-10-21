@@ -6,15 +6,15 @@
 <title>Admin · StreamHub</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=15">
+<link rel="stylesheet" href="css/style.css?v=16">
 <style>
 .shell{display:flex;gap:18px;align-items:flex-start}
 .side{width:210px;flex-shrink:0;position:sticky;top:76px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:18px;padding:14px 10px;backdrop-filter:blur(14px)}
-.side-logo{font-weight:800;font-size:15px;padding:4px 10px 12px;background:linear-gradient(90deg,#a78bfa,#22d3ee);-webkit-background-clip:text;background-clip:text;color:transparent}
+.side-logo{font-weight:800;font-size:15px;padding:4px 10px 12px;color:var(--text)}
 .stab{display:flex;align-items:center;gap:10px;width:100%;text-align:left;border:0;background:transparent;color:var(--text);border-radius:12px;padding:10px 12px;font-size:14px;cursor:pointer;margin:2px 0}
 .stab .si{font-size:16px}
 .stab:hover{background:rgba(255,255,255,.05)}
-.stab.active{background:linear-gradient(135deg,#8b5cf6,#6366f1);color:#fff;box-shadow:0 6px 18px rgba(124,92,246,.35)}
+.stab.active{background:var(--accent);color:#fff;box-shadow:0 6px 18px rgba(255,61,71,.25)}
 .side-link{display:block;margin-top:12px;padding:9px 12px;border-radius:12px;color:var(--muted);font-size:13px;text-decoration:none;border:1px dashed rgba(255,255,255,.14)}
 .side-link:hover{color:var(--text)}
 .main{flex:1;min-width:0}
@@ -64,8 +64,8 @@ select,input[type=text],input[type=search]{background:var(--bg2);border:1px soli
     <button class="btn primary" id="eSave">Save</button>
   </div>
 </dialog>
-<script src="js/config.js?v=15"></script>
-<script src="js/app.js?v=15"></script>
+<script src="js/config.js?v=16"></script>
+<script src="js/app.js?v=16"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -102,7 +102,7 @@ async function aapi(path, opts = {}) {
 function tabs() {
   const t = [["dash","📊","Dashboard"],["review","📥","Review"],["reports","🚩","Reports"],["videos","🎬","Videos"],["cats","🗂️","Categories"],["comments","💬","Comments"],["users","👥","Users"],["settings","🎛️","Settings"],["activity","🛡️","Activity"],["system","🖥️","System"],["setup","⚙️","Setup"]];
   return `<aside class="side">
-    <div class="side-logo">👑 Super Admin</div>
+    <div class="side-logo">Super Admin</div>
     ${t.map(([k,i,l]) => `<button class="stab${tab===k?" active":""}" data-tab="${k}"><span class="si">${i}</span>${l}</button>`).join("")}
     <a class="side-link" href="index.html">🌐 View site</a>
   </aside>`;
@@ -136,7 +136,7 @@ function barChart(days) {
   days.forEach((d, i) => {
     const h = Math.max(2, (d.views / max) * (H - 24));
     const x = i * bw + 2, y = H - h;
-    s += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(bw - 4).toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="#7c5cff" opacity="${d.views ? 0.9 : 0.25}"><title>${d.day}: ${d.views} views</title></rect>`;
+    s += `<rect x="${x.toFixed(1)}" y="${y.toFixed(1)}" width="${(bw - 4).toFixed(1)}" height="${h.toFixed(1)}" rx="3" fill="#ff3d47" opacity="${d.views ? 0.9 : 0.25}"><title>${d.day}: ${d.views} views</title></rect>`;
   });
   return s + "</svg>";
 }
@@ -171,7 +171,7 @@ async function paneDash(pane) {
       ${st.recent_comments.map(c => `<div class="kv"><span><b>${esc(c.user_name)}</b> on ${esc(c.video_title)}<br><small>${esc(c.body)}</small></span><small>${esc((c.created_at||"").slice(0,16).replace("T"," "))}</small></div>`).join("") || "<small>No comments yet.</small>"}
     </div>
     ${sys ? `<div class="chart"><h3 style="margin:0 0 8px;font-size:15px">New signups — last 14 days</h3>
-      <div style="display:flex;gap:3px;align-items:flex-end;height:90px">${(() => { const mx = Math.max(1, ...sys.signups_by_day.map(d => d.signups)); return sys.signups_by_day.map(d => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px" title="${d.day}: ${d.signups}"><div style="width:100%;max-width:24px;height:${Math.max(3, Math.round(d.signups / mx * 64))}px;background:linear-gradient(180deg,#34d399,#0ea5e9);border-radius:4px"></div><small style="font-size:9px;color:var(--muted)">${d.day.slice(5)}</small></div>`).join(""); })()}</div></div>` : ""}
+      <div style="display:flex;gap:3px;align-items:flex-end;height:90px">${(() => { const mx = Math.max(1, ...sys.signups_by_day.map(d => d.signups)); return sys.signups_by_day.map(d => `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:3px" title="${d.day}: ${d.signups}"><div style="width:100%;max-width:24px;height:${Math.max(3, Math.round(d.signups / mx * 64))}px;background:var(--accent);border-radius:4px"></div><small style="font-size:9px;color:var(--muted)">${d.day.slice(5)}</small></div>`).join(""); })()}</div></div>` : ""}
     <div class="panel"><h3>👥 Newest users</h3>
       ${st.recent_users.map(u => `<div class="kv"><span>${esc(u.name)}<br><small>${esc(u.email)}</small></span><small>${esc((u.created_at||"").slice(0,10))}</small></div>`).join("") || "<small>No users yet.</small>"}
     </div>`;
@@ -618,7 +618,7 @@ async function openStats(v) {
     const mx = Math.max(...st.views_by_day.map(d => d.views), 1);
     const bars = st.views_by_day.map(d =>
       `<div style="flex:1;display:flex;flex-direction:column;align-items:center;gap:4px" title="${d.date}: ${d.views} views">
-        <div style="width:100%;max-width:26px;height:${Math.max(3, Math.round(d.views / mx * 90))}px;background:var(--grad,#7c5cff);background:linear-gradient(180deg,#22d3ee,#8b5cf6);border-radius:5px"></div>
+        <div style="width:100%;max-width:26px;height:${Math.max(3, Math.round(d.views / mx * 90))}px;background:linear-gradient(180deg,#ff4a52,#d9232e);border-radius:5px"></div>
         <small style="font-size:9px;color:var(--muted)">${d.date.slice(5)}</small></div>`).join("");
     dlg.innerHTML = `
       <h3 style="margin:0 0 12px">📊 ${esc(v.title)}</h3>

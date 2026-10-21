@@ -61,6 +61,17 @@ function showToast(msg) {
   t._h = setTimeout(() => t.classList.remove("show"), 2400);
 }
 
+
+const ICON = {
+  play: '<svg viewBox="0 0 24 24"><path d="M8 5.5v13l11-6.5z"/></svg>',
+  sun: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><circle cx="12" cy="12" r="4.2" fill="currentColor" stroke="none"/><path d="M12 2.5v2.4M12 19.1v2.4M2.5 12h2.4M19.1 12h2.4M4.9 4.9l1.7 1.7M17.4 17.4l1.7 1.7M19.1 4.9l-1.7 1.7M6.6 17.4l-1.7 1.7"/></svg>',
+  moon: '<svg viewBox="0 0 24 24"><path d="M20.2 14.6A8.6 8.6 0 1 1 9.4 3.8a7 7 0 0 0 10.8 10.8z"/></svg>',
+  home: '<svg viewBox="0 0 24 24"><path d="M12 3 2.5 11h2.7v9h5.1v-6h3.4v6h5.1v-9h2.7z"/></svg>',
+  lib: '<svg viewBox="0 0 24 24"><path d="M4 3.5A1.5 1.5 0 0 1 5.5 2H11v18H5.5A1.5 1.5 0 0 1 4 18.5zM13 2h5.5A1.5 1.5 0 0 1 20 3.5v15a1.5 1.5 0 0 1-1.5 1.5H13z" opacity=".95"/><path d="M13 2l7 0-1.8 18H13z" transform="rotate(8 16 11)"/></svg>',
+  plus: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.4" stroke-linecap="round"><path d="M12 5v14M5 12h14"/></svg>',
+  user: '<svg viewBox="0 0 24 24"><path d="M12 11.2a4.6 4.6 0 1 0-4.6-4.6A4.6 4.6 0 0 0 12 11.2zm0 2.1c-3.9 0-8.5 2-8.5 5.4V21h17v-2.3c0-3.4-4.6-5.4-8.5-5.4z"/></svg>',
+};
+
 function videoCard(v) {
   const a = document.createElement("a");
   a.className = "card";
@@ -90,12 +101,12 @@ function renderHeader(active) {
   const name = localStorage.getItem("name") || "?";
   $("header.top").innerHTML = `
     <div class="top-inner">
-      <a class="logo" href="index.html">${esc(SITE_NAME)}</a>
+      <a class="logo" href="index.html"><span class="logo-mark">${ICON.play}</span>${esc(SITE_NAME)}</a>
       <form class="search" id="searchForm">
         <input id="searchInput" type="search" placeholder="Search videos…" autocomplete="off">
         <div class="suggest" id="suggest" style="display:none"></div>
       </form>
-      <button class="theme-btn" id="themeBtn" title="Theme">${document.documentElement.dataset.theme === "light" ? "🌙" : "☀️"}</button>
+      <button class="theme-btn" id="themeBtn" title="Theme">${document.documentElement.dataset.theme === "light" ? ICON.moon : ICON.sun}</button>
       <a class="navlink ${active === "library" ? "active" : ""}" href="library.html">Library</a>
       ${UPLOADS_ON ? `<a class="navlink upload-link" href="upload.html">＋ Upload</a>` : ""}
       ${logged
@@ -114,7 +125,7 @@ function renderHeader(active) {
     const next = document.documentElement.dataset.theme === "light" ? "dark" : "light";
     document.documentElement.dataset.theme = next;
     localStorage.setItem("theme", next);
-    $("#themeBtn").textContent = next === "light" ? "🌙" : "☀️";
+    $("#themeBtn").innerHTML = next === "light" ? ICON.moon : ICON.sun;
   };
   // search autocomplete
   const sInput = $("#searchInput"), sBox = $("#suggest");
@@ -162,7 +173,7 @@ function renderFooter() {
   const f = document.createElement("footer");
   f.innerHTML = `
     <div class="foot-grid">
-      <div><div class="logo" style="font-size:18px">${esc(SITE_NAME)}</div>
+      <div><div class="logo" style="font-size:18px"><span class="logo-mark" style="width:22px;height:22px">${ICON.play}</span>${esc(SITE_NAME)}</div>
       <p style="margin:8px 0 0">Watch videos in HD, free forever.<br>New videos added every day.</p></div>
       <div><b>Browse</b><br><a href="index.html">Home</a><br><a href="index.html">Trending</a><br><a href="library.html">Library</a></div>
       <div><b>Account</b><br><a href="library.html">Sign in</a><br><a href="upload.html">Upload video</a><br><a href="admin.html">Admin</a></div>
@@ -173,14 +184,14 @@ function renderFooter() {
   if (!document.querySelector(".botnav") && !location.pathname.endsWith("admin.html")) {
     const path = location.pathname;
     const item = (href, icon, label, key) =>
-      `<a href="${href}" class="${path.endsWith(key) ? "on" : ""}"><span>${icon}</span>${label}</a>`;
+      `<a href="${href}" class="${path.endsWith(key) ? "on" : ""}"><span class="bni">${icon}</span>${label}</a>`;
     const nav = document.createElement("nav");
     nav.className = "botnav";
     nav.innerHTML =
-      item("index.html", "🏠", "Home", "index.html") +
-      item("library.html", "📚", "Library", "library.html") +
-      (UPLOADS_ON ? item("upload.html", "➕", "Upload", "upload.html") : "") +
-      item("library.html", "👤", "You", "library.html");
+      item("index.html", ICON.home, "Home", "index.html") +
+      item("library.html", ICON.lib, "Library", "library.html") +
+      (UPLOADS_ON ? item("upload.html", ICON.plus, "Upload", "upload.html") : "") +
+      item("library.html", ICON.user, "You", "library.html");
     document.body.appendChild(nav);
   }
   // back-to-top

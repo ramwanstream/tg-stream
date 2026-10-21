@@ -6,7 +6,7 @@
 <title>Watch</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=15">
+<link rel="stylesheet" href="css/style.css?v=16">
 <style>
 .comments{margin-top:8px}
 .comment{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid #23232e}
@@ -39,9 +39,9 @@ body.theater .watch-side{display:none}
 <body>
 <header class="top"></header>
 <div class="wrap" id="content"></div>
-<script src="js/config.js?v=15"></script>
-<script src="js/app.js?v=15"></script>
-<script src="js/ads.js?v=15"></script>
+<script src="js/config.js?v=16"></script>
+<script src="js/app.js?v=16"></script>
+<script src="js/ads.js?v=16"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -76,17 +76,17 @@ async function load() {
     <h1 class="watch-title">${esc(v.title)}</h1>
     <div class="watch-meta">${fmtViews(v.view_count)} · ${timeAgo(v.published_at)}${v.file_size ? " · " + fmtSize(v.file_size) : ""}</div>
     <div class="actions">
-      <button class="btn" id="likeBtn">${v.liked ? "👍 Liked" : "👍 Like"} · <span id="likeCount">${v.like_count}</span></button>
-      <button class="btn" id="plBtn">➕ Save</button>
-      <button class="btn" id="shareBtn">🔗 Share</button>
-      <button class="btn" id="reportBtn">🚩 Report</button>
-      <button class="btn" id="speedBtn" title="Playback speed">⏩ 1x</button>
-      <button class="btn" id="theaterBtn" title="Theater mode">🎬 Theater</button>
-      <button class="btn speed-btn" id="autoBtn" title="Autoplay next video">▶️ Autoplay: Off</button>
+      <button class="btn" id="likeBtn"><svg class="ic-s" viewBox="0 0 24 24"><path d="M14 9V5a3 3 0 0 0-3-3l-4 9v11h11.3a2 2 0 0 0 2-1.7l1.2-8a2 2 0 0 0-2-2.3z"/><path d="M7 22H4a2 2 0 0 1-2-2v-8a2 2 0 0 1 2-2h3"/></svg><span id="likeLabel">${v.liked ? "Liked" : "Like"}</span> · <span id="likeCount">${v.like_count}</span></button>
+      <button class="btn" id="plBtn"><svg class="ic-s" viewBox="0 0 24 24"><path d="M19 21l-7-5-7 5V5a2 2 0 0 1 2-2h10a2 2 0 0 1 2 2z"/></svg>Save</button>
+      <button class="btn" id="shareBtn"><svg class="ic-s" viewBox="0 0 24 24"><path d="M4 12v8a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2v-8"/><path d="M16 6l-4-4-4 4M12 2v13"/></svg>Share</button>
+      <button class="btn" id="reportBtn"><svg class="ic-s" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/></svg>Report</button>
+      <button class="btn" id="speedBtn" title="Playback speed"><svg viewBox="0 0 24 24"><path d="M13 19l9-7-9-7v14zM2 19l9-7-9-7v14z"/></svg><span id="speedLabel">1x</span></button>
+      <button class="btn" id="theaterBtn" title="Theater mode"><svg class="ic-s" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>Theater</button>
+      <button class="btn speed-btn" id="autoBtn" title="Autoplay next video"><svg viewBox="0 0 24 24"><path d="M6 4.5v15l13-7.5z"/></svg><span id="autoLabel">Autoplay: Off</span></button>
     </div>
     <div class="adslot" data-ad="watch_top"></div>
     ${v.description ? `<div class="desc">${esc(v.description)}</div>` : ""}
-    <div class="section-title">💬 Comments (<span id="ccount">${v.comment_count || 0}</span>)</div>
+    <div class="section-title">Comments (<span id="ccount">${v.comment_count || 0}</span>)</div>
     <div class="comments">
       <div class="cform" id="cform" style="${logged ? "" : "display:none"}">
         <input id="cinput" placeholder="Add a comment…" maxlength="1000">
@@ -138,7 +138,7 @@ async function load() {
     if (logged) api("/api/history", { method: "POST", body: JSON.stringify({ video_id: v.id, position: 0 }) }).catch(() => {});
     else localStorage.removeItem(resumeKey);
     if (localStorage.getItem("autoplay_next") === "1" && v.related && v.related.length) {
-      showToast("▶️ Playing next: " + v.related[0].title);
+      showToast("Playing next: " + v.related[0].title);
       setTimeout(() => { location.href = "watch.html?v=" + v.related[0].id; }, 1200);
     }
   });
@@ -149,13 +149,13 @@ async function load() {
   $("#speedBtn").onclick = () => {
     sIdx = (sIdx + 1) % speeds.length;
     player.playbackRate = speeds[sIdx];
-    $("#speedBtn").textContent = "⏩ " + speeds[sIdx] + "x";
+    $("#speedLabel").textContent = speeds[sIdx] + "x";
     showToast("Speed: " + speeds[sIdx] + "x");
   };
   const autoBtn = $("#autoBtn");
   const paintAuto = () => {
     const on = localStorage.getItem("autoplay_next") === "1";
-    autoBtn.textContent = "▶️ Autoplay: " + (on ? "On" : "Off");
+    $("#autoLabel").textContent = "Autoplay: " + (on ? "On" : "Off");
     autoBtn.classList.toggle("on", on);
   };
   paintAuto();
@@ -242,9 +242,9 @@ async function load() {
     if (!logged) { location.href = "library.html"; return; }
     try {
       const r = await api(`/api/videos/${v.id}/like`, { method: "POST" });
-      $("#likeBtn").firstChild.textContent = (r.liked ? "👍 Liked " : "👍 Like ") + "· ";
+      $("#likeLabel").textContent = r.liked ? "Liked" : "Like";
       $("#likeCount").textContent = r.like_count;
-      if (r.liked) { const b = $("#likeBtn"); b.classList.remove("liked-pop"); void b.offsetWidth; b.classList.add("liked-pop"); showToast("❤️ Added to your liked videos"); }
+      if (r.liked) { const b = $("#likeBtn"); b.classList.remove("liked-pop"); void b.offsetWidth; b.classList.add("liked-pop"); showToast("Added to your liked videos"); }
     } catch (e) { alert(e.message); }
   };
 
@@ -254,12 +254,12 @@ async function load() {
     if (navigator.share) {
       try { await navigator.share({ title: v.title, url }); return; } catch (e) { /* cancelled */ return; }
     }
-    try { await navigator.clipboard.writeText(url); showToast("🔗 Link copied!"); }
+    try { await navigator.clipboard.writeText(url); showToast("Link copied to clipboard"); }
     catch (e) { prompt("Copy this link:", url); }
   };
   $("#theaterBtn").onclick = () => {
     document.body.classList.toggle("theater");
-    showToast(document.body.classList.contains("theater") ? "🎬 Theater mode on" : "Theater mode off");
+    showToast(document.body.classList.contains("theater") ? "Theater mode on" : "Theater mode off");
   };
   // save to playlist
   $("#plBtn").onclick = async () => {
