@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Watch</title>
-<link rel="stylesheet" href="css/style.css?v=14">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css?v=15">
 <style>
 .comments{margin-top:8px}
 .comment{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid #23232e}
@@ -22,14 +24,24 @@
 .rform .btn{padding:7px 14px;font-size:13px}
 .cform{display:flex;gap:8px;margin:12px 0}
 .cform input{flex:1;background:var(--bg2);border:1px solid #2a2a38;color:var(--text);border-radius:999px;padding:10px 16px;font-size:14px}
+.watch-layout{display:block}
+@media (min-width:1000px){
+  .watch-layout{display:grid;grid-template-columns:minmax(0,1fr) 350px;gap:22px;align-items:start}
+  .watch-side .side-grid{grid-template-columns:1fr;gap:14px;padding-top:4px}
+}
+body.theater .wrap{max-width:1500px}
+body.theater .watch-layout{grid-template-columns:1fr}
+body.theater .watch-side{display:none}
+#likeBtn.liked-pop{animation:pop .35s ease}
+@keyframes pop{40%{transform:scale(1.18)}}
 </style>
 </head>
 <body>
 <header class="top"></header>
 <div class="wrap" id="content"></div>
-<script src="js/config.js?v=14"></script>
-<script src="js/app.js?v=14"></script>
-<script src="js/ads.js?v=14"></script>
+<script src="js/config.js?v=15"></script>
+<script src="js/app.js?v=15"></script>
+<script src="js/ads.js?v=15"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -53,6 +65,7 @@ async function load() {
   if (!logged) resume = parseInt(localStorage.getItem(resumeKey) || "0", 10) || 0;
 
   content.innerHTML = `
+    <div class="watch-layout"><div class="watch-main">
     <div class="player-shell"><div class="player-wrap">
       <video class="player" id="player" controls playsinline preload="metadata"
              ${v.thumb_url ? `poster="${esc(v.thumb_url)}"` : ""}>
@@ -68,6 +81,7 @@ async function load() {
       <button class="btn" id="shareBtn">🔗 Share</button>
       <button class="btn" id="reportBtn">🚩 Report</button>
       <button class="btn" id="speedBtn" title="Playback speed">⏩ 1x</button>
+      <button class="btn" id="theaterBtn" title="Theater mode">🎬 Theater</button>
       <button class="btn speed-btn" id="autoBtn" title="Autoplay next video">▶️ Autoplay: Off</button>
     </div>
     <div class="adslot" data-ad="watch_top"></div>
@@ -82,8 +96,12 @@ async function load() {
       <div id="clist"></div>
     </div>
     <div class="adslot" data-ad="watch_mid"></div>
-    <div class="section-title">Related</div>
-    <div class="grid" id="related"></div>`;
+    </div>
+    <aside class="watch-side">
+      <div class="section-title" style="margin-top:16px">Related</div>
+      <div class="grid side-grid" id="related"></div>
+    </aside>
+    </div>`;
 
   const player = $("#player");
   const rel = $("#related");
@@ -226,23 +244,23 @@ async function load() {
       const r = await api(`/api/videos/${v.id}/like`, { method: "POST" });
       $("#likeBtn").firstChild.textContent = (r.liked ? "👍 Liked " : "👍 Like ") + "· ";
       $("#likeCount").textContent = r.like_count;
+      if (r.liked) { const b = $("#likeBtn"); b.classList.remove("liked-pop"); void b.offsetWidth; b.classList.add("liked-pop"); showToast("❤️ Added to your liked videos"); }
     } catch (e) { alert(e.message); }
   };
 
   // share
   $("#shareBtn").onclick = async () => {
     const url = location.href;
-  $("#reportBtn").onclick = async () => {
-    if (!logged) { alert("Sign in to report."); return; }
-    const reason = prompt("Why are you reporting this video? (optional)");
-    if (reason === null) return;
-    try { await api("/api/reports", { method: "POST", body: JSON.stringify({ video_id: v.id, reason }) }); alert("Reported. The admin will review it."); }
-    catch (e) { alert(e.message); }
-  };
-    try { await navigator.clipboard.writeText(url); alert("Link copied!"); }
+    if (navigator.share) {
+      try { await navigator.share({ title: v.title, url }); return; } catch (e) { /* cancelled */ return; }
+    }
+    try { await navigator.clipboard.writeText(url); showToast("🔗 Link copied!"); }
     catch (e) { prompt("Copy this link:", url); }
   };
-
+  $("#theaterBtn").onclick = () => {
+    document.body.classList.toggle("theater");
+    showToast(document.body.classList.contains("theater") ? "🎬 Theater mode on" : "Theater mode off");
+  };
   // save to playlist
   $("#plBtn").onclick = async () => {
     if (!logged) { location.href = "library.html"; return; }

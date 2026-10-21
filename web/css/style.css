@@ -268,3 +268,44 @@ html { scrollbar-color: #3a3a4d var(--bg); }
 .profile-info h2{margin:0 0 6px;font-size:21px}
 .profile-stats{display:flex;gap:16px;flex-wrap:wrap;color:var(--muted);font-size:13px}
 .profile-stats b{color:var(--text)}
+
+/* ================= v11: font, card v2, bottom nav, footer ================= */
+body { font-family: "Plus Jakarta Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif; }
+.card-row { display: flex; gap: 10px; margin-top: 10px; align-items: flex-start; }
+.card-av {
+  width: 34px; height: 34px; border-radius: 50%; flex-shrink: 0;
+  background: var(--grad); color: #fff; font-weight: 800; font-size: 14px;
+  display: flex; align-items: center; justify-content: center;
+}
+.card-txt { min-width: 0; flex: 1; }
+.card-txt h3 { margin: 0 0 3px; }
+.card:hover .card-txt h3 { color: #c4b5fd; }
+[data-theme="light"] .card:hover .card-txt h3 { color: #6d28d9; }
+.foot-grid { display: grid; grid-template-columns: 1.4fr 1fr 1fr; gap: 18px; max-width: 1120px; margin: 0 auto; text-align: left; }
+.foot-grid b { color: var(--text); display: inline-block; margin-bottom: 6px; }
+.foot-grid a { display: inline-block; padding: 2px 0; }
+.foot-grid a:hover { color: var(--accent); }
+@media (max-width: 640px) { .foot-grid { grid-template-columns: 1fr 1fr; } }
+.botnav { display: none; }
+@media (max-width: 760px) {
+  .botnav {
+    display: flex; position: fixed; left: 0; right: 0; bottom: 0; z-index: 90;
+    background: rgba(10,10,16,.92); backdrop-filter: blur(16px); -webkit-backdrop-filter: blur(16px);
+    border-top: 1px solid var(--border); padding: 6px 4px calc(6px + env(safe-area-inset-bottom));
+  }
+  [data-theme="light"] .botnav { background: rgba(255,255,255,.94); }
+  .botnav a {
+    flex: 1; display: flex; flex-direction: column; align-items: center; gap: 2px;
+    font-size: 10.5px; font-weight: 600; color: var(--muted); padding: 4px 0; border-radius: 10px;
+  }
+  .botnav a span { font-size: 19px; line-height: 1; }
+  .botnav a.on { color: var(--text); }
+  body { padding-bottom: 62px; }
+}
+.btt {
+  position: fixed; right: 16px; bottom: 84px; z-index: 95; width: 42px; height: 42px;
+  border-radius: 50%; border: 1px solid var(--border); background: var(--bg2); color: var(--text);
+  font-size: 18px; cursor: pointer; box-shadow: var(--shadow);
+}
+@media (min-width: 761px) { .btt { bottom: 22px; } }
+.btt:hover { border-color: var(--accent); }

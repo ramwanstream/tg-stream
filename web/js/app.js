@@ -65,6 +65,7 @@ function videoCard(v) {
   const a = document.createElement("a");
   a.className = "card";
   a.href = "watch.html?v=" + v.id;
+  const catInit = esc((v.category || "S")[0].toUpperCase());
   a.innerHTML = `
     <div class="thumb">
       <div class="thumb-ph">▶</div>
@@ -73,8 +74,13 @@ function videoCard(v) {
       ${v.resume_position && v.duration && v.resume_position > 5 && v.resume_position < v.duration - 10
         ? `<span class="cwbar"><i style="width:${Math.round(v.resume_position / v.duration * 100)}%"></i></span>` : ""}
     </div>
-    <h3>${esc(v.title)}</h3>
-    <div class="meta">${fmtViews(v.view_count)} · ${timeAgo(v.published_at)}</div>`;
+    <div class="card-row">
+      <span class="card-av">${catInit}</span>
+      <div class="card-txt">
+        <h3>${esc(v.title)}</h3>
+        <div class="meta">${v.category ? esc(v.category) + " · " : ""}${fmtViews(v.view_count)} · ${timeAgo(v.published_at)}</div>
+      </div>
+    </div>`;
   return a;
 }
 
@@ -154,8 +160,36 @@ function showAnnouncement() {
 
 function renderFooter() {
   const f = document.createElement("footer");
-  f.innerHTML = `© ${new Date().getFullYear()} ${esc(SITE_NAME)} · Videos stream from a private library · <a href="admin.html" style="color:var(--muted)">Admin</a>`;
+  f.innerHTML = `
+    <div class="foot-grid">
+      <div><div class="logo" style="font-size:18px">${esc(SITE_NAME)}</div>
+      <p style="margin:8px 0 0">Watch videos in HD, free forever.<br>New videos added every day.</p></div>
+      <div><b>Browse</b><br><a href="index.html">Home</a><br><a href="index.html">Trending</a><br><a href="library.html">Library</a></div>
+      <div><b>Account</b><br><a href="library.html">Sign in</a><br><a href="upload.html">Upload video</a><br><a href="admin.html">Admin</a></div>
+    </div>
+    <div style="margin-top:16px">© ${new Date().getFullYear()} ${esc(SITE_NAME)} · Made with ❤️</div>`;
   document.body.appendChild(f);
+  // mobile bottom navigation (YouTube-app style)
+  if (!document.querySelector(".botnav") && !location.pathname.endsWith("admin.html")) {
+    const path = location.pathname;
+    const item = (href, icon, label, key) =>
+      `<a href="${href}" class="${path.endsWith(key) ? "on" : ""}"><span>${icon}</span>${label}</a>`;
+    const nav = document.createElement("nav");
+    nav.className = "botnav";
+    nav.innerHTML =
+      item("index.html", "🏠", "Home", "index.html") +
+      item("library.html", "📚", "Library", "library.html") +
+      (UPLOADS_ON ? item("upload.html", "➕", "Upload", "upload.html") : "") +
+      item("library.html", "👤", "You", "library.html");
+    document.body.appendChild(nav);
+  }
+  // back-to-top
+  const btt = document.createElement("button");
+  btt.className = "btt"; btt.textContent = "↑"; btt.title = "Back to top";
+  btt.style.display = "none";
+  btt.onclick = () => window.scrollTo({ top: 0, behavior: "smooth" });
+  addEventListener("scroll", () => { btt.style.display = scrollY > 600 ? "" : "none"; }, { passive: true });
+  document.body.appendChild(btt);
 }
 
 function showEmpty(el, icon, title, sub) {

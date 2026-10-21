@@ -4,7 +4,9 @@
 <meta charset="UTF-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>StreamHub</title>
-<link rel="stylesheet" href="css/style.css?v=14">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="css/style.css?v=15">
 <style>
 .hero{position:relative;border-radius:16px;overflow:hidden;margin:14px 0 6px;min-height:200px;background:var(--card);display:block;color:inherit;text-decoration:none}
 .hero img{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
@@ -13,6 +15,13 @@
 .hero .kicker{font-size:11px;letter-spacing:2px;color:#c4b5fd;text-transform:uppercase}
 .hero h2{margin:6px 0;font-size:20px;overflow-wrap:anywhere;word-break:break-word}
 .hero .meta{font-size:12px;color:#c9c9d4}
+.hero-slide{position:absolute;inset:0;opacity:0;transition:opacity .9s ease;pointer-events:none}
+.hero-slide.on{opacity:1;pointer-events:auto}
+.hero-slide img{animation:kenburns 7s ease both}
+@keyframes kenburns{from{transform:scale(1)}to{transform:scale(1.07)}}
+.hero-dots{position:absolute;right:14px;bottom:14px;display:flex;gap:6px;z-index:3}
+.hero-dots i{width:7px;height:7px;border-radius:50%;background:rgba(255,255,255,.45);cursor:pointer;transition:.3s}
+.hero-dots i.on{background:#fff;width:20px;border-radius:99px}
 .row-scroll{display:flex;gap:12px;overflow-x:auto;padding:4px 2px 12px;scroll-snap-type:x mandatory}
 .row-scroll .card{min-width:250px;max-width:250px;scroll-snap-align:start}
 .sorttabs{display:flex;gap:6px;margin:10px 0}
@@ -40,9 +49,9 @@
   <div class="grid" id="grid"></div>
   <button class="btn loadmore" id="moreBtn" style="display:none">Load more</button>
 </div>
-<script src="js/config.js?v=14"></script>
-<script src="js/app.js?v=14"></script>
-<script src="js/ads.js?v=14"></script>
+<script src="js/config.js?v=15"></script>
+<script src="js/app.js?v=15"></script>
+<script src="js/ads.js?v=15"></script>
 <script>
 renderHeader("home");
 renderFooter();
@@ -54,19 +63,38 @@ let sort = "new";
 let page = 1;
 const grid = $("#grid"), moreBtn = $("#moreBtn");
 
-function renderHero(v) {
+function renderHero(v) { renderHeroCarousel(v ? [v] : []); }
+
+let heroTimer = null;
+function renderHeroCarousel(items) {
   const hero = $("#hero");
-  if (!v) { hero.innerHTML = ""; return; }
+  if (!items.length) { hero.innerHTML = ""; return; }
   hero.innerHTML = `
-    <a class="hero" href="watch.html?v=${v.id}">
-      ${v.thumb_url ? `<img src="${esc(v.thumb_url)}" alt="" fetchpriority="high" decoding="async" onerror="this.remove()">` : ""}
-      <div class="grad"></div>
-      <div class="txt">
-        <div class="kicker">✨ Featured</div>
-        <h2>${esc(v.title)}</h2>
-        <div class="meta">${fmtViews(v.view_count)} · ${timeAgo(v.published_at)}${v.duration ? " · " + fmtDur(v.duration) : ""}</div>
-      </div>
-    </a>`;
+    <div class="hero" id="heroBox">
+      ${items.map((v, i) => `
+      <a class="hero-slide${i === 0 ? " on" : ""}" href="watch.html?v=${v.id}">
+        ${v.thumb_url ? `<img src="${esc(v.thumb_url)}" alt="" ${i === 0 ? 'fetchpriority="high"' : 'loading="lazy"'} decoding="async" onerror="this.remove()">` : ""}
+        <div class="grad"></div>
+        <div class="txt">
+          <div class="kicker">✨ Featured</div>
+          <h2>${esc(v.title)}</h2>
+          <div class="meta">${fmtViews(v.view_count)} · ${timeAgo(v.published_at)}${v.duration ? " · " + fmtDur(v.duration) : ""}</div>
+        </div>
+      </a>`).join("")}
+      ${items.length > 1 ? `<div class="hero-dots">${items.map((_, i) => `<i data-h="${i}" class="${i === 0 ? "on" : ""}"></i>`).join("")}</div>` : ""}
+    </div>`;
+  if (items.length < 2) return;
+  const slides = hero.querySelectorAll(".hero-slide"), dots = hero.querySelectorAll(".hero-dots i");
+  let cur = 0;
+  const go = n => {
+    slides[cur].classList.remove("on"); dots[cur].classList.remove("on");
+    cur = (n + items.length) % items.length;
+    slides[cur].classList.add("on"); dots[cur].classList.add("on");
+  };
+  dots.forEach(d => d.onclick = e => { e.preventDefault(); go(+d.dataset.h); restart(); });
+  const restart = () => { clearInterval(heroTimer); heroTimer = setInterval(() => go(cur + 1), 6000); };
+  restart();
+  $("#heroBox").addEventListener("pointerdown", () => clearInterval(heroTimer));
 }
 
 async function loadContinue() {
@@ -90,8 +118,8 @@ async function loadFeatured() {
     row.innerHTML = "";
     d.items.forEach(v => row.appendChild(videoCard(v)));
     row.style.display = ""; title.style.display = "";
-    // if the admin featured something, the top featured video becomes the hero
-    if (d.items[0]) renderHero(d.items[0]);
+    // featured videos rotate in the hero carousel
+    renderHeroCarousel(d.items.slice(0, 5));
   } catch (e) {}
 }
 
