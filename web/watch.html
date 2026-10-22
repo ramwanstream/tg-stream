@@ -6,7 +6,7 @@
 <title>Watch</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=17">
+<link rel="stylesheet" href="css/style.css?v=18">
 <style>
 .comments{margin-top:8px}
 .comment{display:flex;gap:10px;padding:12px 0;border-bottom:1px solid #23232e}
@@ -39,9 +39,9 @@ body.theater .watch-side{display:none}
 <body>
 <header class="top"></header>
 <div class="wrap" id="content"></div>
-<script src="js/config.js?v=17"></script>
-<script src="js/app.js?v=17"></script>
-<script src="js/ads.js?v=17"></script>
+<script src="js/config.js?v=18"></script>
+<script src="js/app.js?v=18"></script>
+<script src="js/ads.js?v=18"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -82,11 +82,11 @@ async function load() {
       <button class="btn" id="reportBtn"><svg class="ic-s" viewBox="0 0 24 24"><path d="M4 15s1-1 4-1 5 2 8 2 4-1 4-1V3s-1 1-4 1-5-2-8-2-4 1-4 1z"/><path d="M4 22v-7"/></svg>Report</button>
       <button class="btn" id="speedBtn" title="Playback speed"><svg viewBox="0 0 24 24"><path d="M13 19l9-7-9-7v14zM2 19l9-7-9-7v14z"/></svg><span id="speedLabel">1x</span></button>
       <button class="btn" id="theaterBtn" title="Theater mode"><svg class="ic-s" viewBox="0 0 24 24"><path d="M8 3H5a2 2 0 0 0-2 2v3m18 0V5a2 2 0 0 0-2-2h-3m0 18h3a2 2 0 0 0 2-2v-3M3 16v3a2 2 0 0 0 2 2h3"/></svg>Theater</button>
-      <button class="btn speed-btn" id="autoBtn" title="Autoplay next video"><svg viewBox="0 0 24 24"><path d="M6 4.5v15l13-7.5z"/></svg><span id="autoLabel">Autoplay: Off</span></button>
+      <button class="btn speed-btn" id="autoBtn" title="Autoplay next video"><svg viewBox="0 0 24 24"><path d="M6 4.5v15l13-7.5z"/></svg><span id="autoLabel">Autoplay</span></button>
     </div>
     <div class="adslot" data-ad="watch_top"></div>
     ${v.description ? `<div class="desc">${esc(v.description)}</div>` : ""}
-    <div class="section-title">Comments (<span id="ccount">${v.comment_count || 0}</span>)</div>
+    <div class="section-title"><span>Comments (<span id="ccount">${v.comment_count || 0}</span>)</span></div>
     <div class="comments">
       <div class="cform" id="cform" style="${logged ? "" : "display:none"}">
         <input id="cinput" placeholder="Add a comment…" maxlength="1000">
@@ -155,7 +155,7 @@ async function load() {
   const autoBtn = $("#autoBtn");
   const paintAuto = () => {
     const on = localStorage.getItem("autoplay_next") === "1";
-    $("#autoLabel").textContent = "Autoplay: " + (on ? "On" : "Off");
+    $("#autoLabel").textContent = "Autoplay";
     autoBtn.classList.toggle("on", on);
   };
   paintAuto();

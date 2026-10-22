@@ -107,11 +107,11 @@ function renderHeader(active) {
         <div class="suggest" id="suggest" style="display:none"></div>
       </form>
       <button class="theme-btn" id="themeBtn" title="Theme">${document.documentElement.dataset.theme === "light" ? ICON.moon : ICON.sun}</button>
-      <a class="navlink ${active === "library" ? "active" : ""}" href="library.html">Library</a>
+      <a class="navlink lib-link ${active === "library" ? "active" : ""}" href="library.html">Library</a>
       ${UPLOADS_ON ? `<a class="navlink upload-link" href="upload.html">＋ Upload</a>` : ""}
       ${logged
         ? `<button class="avatar-btn" id="avatarBtn" title="${esc(name)}">${esc(name[0].toUpperCase())}</button>`
-        : `<a class="navlink" href="library.html">Sign in</a>`}
+        : `<a class="navlink signin-link" href="library.html">Sign in</a>`}
     </div>`;
   const sf = $("#searchForm");
   const params = new URLSearchParams(location.search);

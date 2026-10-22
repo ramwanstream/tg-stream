@@ -6,7 +6,7 @@
 <title>Admin · StreamHub</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=17">
+<link rel="stylesheet" href="css/style.css?v=18">
 <style>
 .shell{display:flex;gap:18px;align-items:flex-start}
 .side{width:210px;flex-shrink:0;position:sticky;top:76px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:18px;padding:14px 10px;backdrop-filter:blur(14px)}
@@ -43,7 +43,7 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px}
 .tbl tr:last-child td{border-bottom:0}
 .thumb-sm{width:96px;aspect-ratio:16/9;object-fit:cover;border-radius:8px;background:#1a1a24;flex-shrink:0}
 .bulkbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0;padding:10px;background:var(--bg2);border-radius:10px;font-size:13px}
-select,input[type=text],input[type=search]{background:var(--bg2);border:1px solid #2a2a38;color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px}
+select,input[type=text],input[type=search],input[type=password],input[type=number]{background:var(--bg2);border:1px solid #2a2a38;color:var(--text);border-radius:10px;padding:0 12px;height:42px;font-size:14px}
 .btn.sm{padding:6px 12px;font-size:12px}
 /* v13 readability */
 body{font-size:15px}
@@ -85,8 +85,8 @@ select,input[type=text],input[type=search]{font-size:14px}
     <button class="btn primary" id="eSave">Save</button>
   </div>
 </dialog>
-<script src="js/config.js?v=17"></script>
-<script src="js/app.js?v=17"></script>
+<script src="js/config.js?v=18"></script>
+<script src="js/app.js?v=18"></script>
 <script>
 renderHeader("");
 renderFooter();
