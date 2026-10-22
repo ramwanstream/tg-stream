@@ -6,7 +6,7 @@
 <title>StreamHub</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=16">
+<link rel="stylesheet" href="css/style.css?v=17">
 <style>
 .hero{position:relative;border-radius:16px;overflow:hidden;margin:14px 0 6px;min-height:200px;background:var(--card);display:block;color:inherit;text-decoration:none}
 .hero img{width:100%;height:100%;object-fit:cover;position:absolute;inset:0}
@@ -24,6 +24,8 @@
 .hero-dots i.on{background:#fff;width:20px;border-radius:99px}
 .row-scroll{display:flex;gap:12px;overflow-x:auto;padding:4px 2px 12px;scroll-snap-type:x mandatory}
 .row-scroll .card{min-width:250px;max-width:250px;scroll-snap-align:start}
+.spinner{display:inline-block;width:26px;height:26px;border-radius:50%;border:3px solid var(--border);border-top-color:var(--accent);animation:spin .7s linear infinite}
+@keyframes spin{to{transform:rotate(360deg)}}
 .sorttabs{display:flex;gap:6px;margin:10px 0}
 .sorttab{border:1px solid #2a2a38;background:var(--bg2);color:var(--text);border-radius:999px;padding:7px 14px;font-size:12px;cursor:pointer}
 .sorttab.active{background:var(--accent);border-color:var(--accent);color:#fff}
@@ -47,11 +49,13 @@
   </div>
   <div class="chips" id="chips"></div>
   <div class="grid" id="grid"></div>
-  <button class="btn loadmore" id="moreBtn" style="display:none">Load more</button>
+  <div id="feedSpin" style="display:none;text-align:center;padding:22px 0 6px"><span class="spinner"></span></div>
+  <p id="feedEnd" style="display:none;text-align:center;color:var(--muted);font-size:13px;padding:14px 0 4px">You're all caught up ✓</p>
+  <div id="feedSentinel" style="height:4px"></div>
 </div>
-<script src="js/config.js?v=16"></script>
-<script src="js/app.js?v=16"></script>
-<script src="js/ads.js?v=16"></script>
+<script src="js/config.js?v=17"></script>
+<script src="js/app.js?v=17"></script>
+<script src="js/ads.js?v=17"></script>
 <script>
 renderHeader("home");
 renderFooter();
@@ -61,7 +65,8 @@ let q = params.get("q") || "";
 let category = "all";
 let sort = "new";
 let page = 1;
-const grid = $("#grid"), moreBtn = $("#moreBtn");
+let feedLoading = false, feedHasMore = true;
+const grid = $("#grid");
 
 function renderHero(v) { renderHeroCarousel(v ? [v] : []); }
 
@@ -156,7 +161,7 @@ async function loadCats() {
   } catch (e) { /* categories optional */ }
 }
 
-function reset() { page = 1; grid.innerHTML = ""; $("#hero").innerHTML = ""; load(); loadCats(); }
+function reset() { page = 1; feedHasMore = true; grid.innerHTML = ""; $("#hero").innerHTML = ""; $("#feedEnd").style.display = "none"; load(); loadCats(); }
 
 $$("#sorttabs .sorttab").forEach(b => b.onclick = () => {
   $$("#sorttabs .sorttab").forEach(x => x.classList.remove("active"));
@@ -165,7 +170,9 @@ $$("#sorttabs .sorttab").forEach(b => b.onclick = () => {
 });
 
 async function load() {
-  moreBtn.style.display = "none";
+  if (feedLoading) return;
+  feedLoading = true;
+  $("#feedSpin").style.display = page > 1 ? "block" : "none";
   const showHero = (page === 1 && sort === "new" && !q && category === "all");
   if (page === 1) {
     grid.innerHTML = Array(6).fill('<div><div class="thumb skel"></div><div class="skel" style="height:14px;margin-top:8px"></div><div class="skel" style="height:12px;width:60%;margin-top:6px"></div></div>').join("");
@@ -186,6 +193,8 @@ async function load() {
         q ? `Nothing found for "${q}".` : "Videos from the channel will appear here automatically.");
       return;
     }
+    feedHasMore = data.total > page * data.per_page;
+    if (!feedHasMore && page > 1) $("#feedEnd").style.display = "block";
     data.items.forEach((v, i) => {
       grid.appendChild(videoCard(v));
       // in-feed native ad after every 6th video
@@ -197,12 +206,18 @@ async function load() {
       }
     });
     renderAds(grid);
-    if (data.total > page * data.per_page) { moreBtn.style.display = "block"; }
   } catch (e) {
     if (page === 1) { showEmpty(grid, "⚠️", "Could not load videos", e.message); renderHero(null); }
+  } finally {
+    feedLoading = false;
+    $("#feedSpin").style.display = "none";
   }
 }
-moreBtn.onclick = () => { page++; load(); };
+// infinite scroll: next page loads automatically as the user reaches the bottom
+const feedObserver = new IntersectionObserver(entries => {
+  if (entries[0].isIntersecting && feedHasMore && !feedLoading) { page++; load(); }
+}, { rootMargin: "700px 0px" });
+feedObserver.observe($("#feedSentinel"));
 loadCats(); load(); loadTrending(); loadFeatured(); loadContinue();
 </script>
 </body>

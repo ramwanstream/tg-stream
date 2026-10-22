@@ -6,7 +6,7 @@
 <title>Admin · StreamHub</title>
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link href="https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;600;700;800&display=swap" rel="stylesheet">
-<link rel="stylesheet" href="css/style.css?v=16">
+<link rel="stylesheet" href="css/style.css?v=17">
 <style>
 .shell{display:flex;gap:18px;align-items:flex-start}
 .side{width:210px;flex-shrink:0;position:sticky;top:76px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.07);border-radius:18px;padding:14px 10px;backdrop-filter:blur(14px)}
@@ -45,6 +45,27 @@ table.tbl{width:100%;border-collapse:collapse;font-size:13px}
 .bulkbar{display:flex;gap:8px;align-items:center;flex-wrap:wrap;margin:12px 0;padding:10px;background:var(--bg2);border-radius:10px;font-size:13px}
 select,input[type=text],input[type=search]{background:var(--bg2);border:1px solid #2a2a38;color:var(--text);border-radius:10px;padding:9px 12px;font-size:13px}
 .btn.sm{padding:6px 12px;font-size:12px}
+/* v13 readability */
+body{font-size:15px}
+table.tbl{font-size:14.5px}
+.tbl th{font-size:12px;text-transform:uppercase;letter-spacing:.05em;color:#b9b9c2}
+.tbl td{padding:10px 8px}
+.tbl td small{font-size:12.5px !important;color:#d3d3da !important}
+#vlist{overflow-x:auto;-webkit-overflow-scrolling:touch}
+.vtitle{font-size:15px;font-weight:700;line-height:1.35}
+.vmeta{font-size:12.5px;color:#d3d3da;margin-top:3px}
+.dchip{display:inline-block;background:#000;border:1px solid var(--border);color:#fff;font-size:12.5px;font-weight:700;padding:3px 9px;border-radius:7px;white-space:nowrap;font-variant-numeric:tabular-nums}
+.num{font-weight:700;font-size:15px;font-variant-numeric:tabular-nums;white-space:nowrap}
+.stat b{background:none;-webkit-background-clip:initial;background-clip:initial;color:var(--text);font-size:24px}
+.stat span{font-size:12.5px;color:#c9c9d1}
+.kv{font-size:14px}
+select,input[type=text],input[type=search]{font-size:14px}
+.pill{font-size:12px;padding:4px 11px}
+.btn.sm{font-size:12.5px;padding:7px 13px}
+.vtbl{table-layout:fixed}
+.vtbl .vtitle{display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;overflow:hidden}
+.vtbl td{padding:10px 6px}
+.btn.sm.ic{padding:7px 9px}
 .pill{font-size:11px;padding:3px 10px;border-radius:999px;background:#2a2a38;white-space:nowrap}
 .pill.pub{background:#123f2a;color:#4ade80}
 .pill.unpub{background:#3f2a12;color:#fbbf24}
@@ -64,8 +85,8 @@ select,input[type=text],input[type=search]{background:var(--bg2);border:1px soli
     <button class="btn primary" id="eSave">Save</button>
   </div>
 </dialog>
-<script src="js/config.js?v=16"></script>
-<script src="js/app.js?v=16"></script>
+<script src="js/config.js?v=17"></script>
+<script src="js/app.js?v=17"></script>
 <script>
 renderHeader("");
 renderFooter();
@@ -305,22 +326,24 @@ async function loadVideos() {
   bb.style.display = vsel.size ? "flex" : "none";
   const sc = $("#selCount"); if (sc) sc.textContent = `${vsel.size} selected`;
   box.innerHTML = "";
-  const tbl = document.createElement("table"); tbl.className = "tbl";
-  tbl.innerHTML = `<tr><th><input type="checkbox" id="selAll"></th><th></th><th>Title</th><th>Views</th><th>Status</th><th></th></tr>`;
+  const tbl = document.createElement("table");
+  tbl.className = "tbl vtbl";
+  tbl.innerHTML = `<colgroup><col style="width:32px"><col style="width:100px"><col><col style="width:80px"><col style="width:136px"><col style="width:96px"><col style="width:230px"></colgroup><tr><th><input type="checkbox" id="selAll"></th><th></th><th>Title</th><th>Length</th><th>Views</th><th>Status</th><th></th></tr>`;
   items.forEach(v => {
     const tr = document.createElement("tr");
     tr.innerHTML = `
       <td><input type="checkbox" data-id="${v.id}"${vsel.has(v.id) ? " checked" : ""}></td>
       <td>${v.thumb_url ? `<img src="${esc(v.thumb_url)}" class="thumb-sm" loading="lazy">` : `<div class="thumb-sm"></div>`}</td>
-      <td><b>${esc(v.title)}</b><br><small style="color:var(--muted)">${esc(v.category || "")} · ${fmtDur(v.duration)} · ${fmtSize(v.file_size)}</small></td>
-      <td><b>${fmtViews(v.view_count)}</b><br><small style="color:var(--muted)">❤️${v.like_count || 0} 💬${v.comment_count || 0}</small></td>
+      <td><div class="vtitle" title="${esc(v.title)}">${esc(v.title)}</div><div class="vmeta">${esc(v.category || "Uncategorized")} · ${fmtSize(v.file_size)}</div></td>
+      <td><span class="dchip">${v.duration ? fmtDur(v.duration) : "—"}</span></td>
+      <td><div class="num">${fmtViews(v.view_count)}</div><div class="vmeta">${v.like_count || 0} likes · ${v.comment_count || 0} comments</div></td>
       <td><span class="pill ${v.visibility === "published" ? "pub" : "unpub"}">${v.visibility}</span><br><small style="color:var(--muted)">${v.status}</small></td>
       <td style="white-space:nowrap">
         <button class="btn sm" data-act="toggle">${v.visibility === "published" ? "Unpublish" : "Publish"}</button>
-        <button class="btn sm" data-act="feat" title="Feature on homepage">${v.featured ? "⭐" : "☆"}</button>
-        <button class="btn sm" data-act="stats">📊 Stats</button>
+        <button class="btn sm ic" data-act="feat" title="Feature on homepage">${v.featured ? "⭐" : "☆"}</button>
+        <button class="btn sm ic" data-act="stats" title="Statistics">📊</button>
         <button class="btn sm" data-act="edit">Edit</button>
-        <button class="btn sm danger" data-act="del">✕</button>
+        <button class="btn sm ic danger" data-act="del" title="Delete">✕</button>
       </td>`;
     tr.querySelector("[data-id]").onchange = e => { e.target.checked ? vsel.add(v.id) : vsel.delete(v.id); loadVideos(); };
     const acts = tr.querySelectorAll("[data-act]");

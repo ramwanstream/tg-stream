@@ -594,9 +594,15 @@ async def sync_channel(limit: int = 300) -> dict:
             # stable identity: a message's media never changes
             attrs["unique_id"] = f"{tg.channel_id}:{msg.id}"
             exists = con.execute(
-                "SELECT id FROM videos WHERE tg_file_unique_id=?",
+                "SELECT id, duration, file_size, mime FROM videos WHERE tg_file_unique_id=?",
                 (attrs["unique_id"],)).fetchone()
             if exists:
+                # backfill: rows first imported without duration (e.g. sent as a
+                # plain document) get their real length once Telegram reports it
+                if (not exists["duration"]) and attrs["duration"]:
+                    con.execute(
+                        "UPDATE videos SET duration=?, file_size=?, mime=? WHERE id=?",
+                        (attrs["duration"], attrs["file_size"], attrs["mime"], exists["id"]))
                 skipped += 1
                 continue
             title = (msg.text or "").strip().split("\n")[0][:120] or attrs["file_name"] or "Untitled video"
