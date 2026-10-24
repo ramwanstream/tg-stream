@@ -579,6 +579,49 @@ def _video_attrs(msg) -> Optional[dict]:
     }
 
 
+_HASHTAG_RE = re.compile(r"#([\w]+)", re.UNICODE)
+
+
+def _nice_cat_name(tag: str) -> str:
+    """#travel_vlog -> 'Travel Vlog'; #4K / #HD stay as typed."""
+    out = []
+    for w in [w for w in tag.replace("_", " ").split() if w]:
+        out.append(w if (w.isupper() or not w.islower()) else w.capitalize())
+    return " ".join(out)[:60] or "Uncategorized"
+
+
+def _slugify(name: str) -> str:
+    return re.sub(r"[^a-z0-9-]", "-", name.lower())[:60].strip("-") or "cat"
+
+
+def _category_id_for_tag(con, tag: str) -> int:
+    """Get-or-create the category for a hashtag (same slug rule as admin)."""
+    name = _nice_cat_name(tag)
+    slug = _slugify(name)
+    row = con.execute("SELECT id FROM categories WHERE slug=?", (slug,)).fetchone()
+    if row:
+        return row["id"]
+    return con.execute(
+        "INSERT INTO categories (name, slug) VALUES (?,?)", (name, slug)).lastrowid
+
+
+def _parse_caption(text: str):
+    """Channel caption -> (title, hashtags).
+
+    The caption's first text line becomes the video title (hashtags stripped
+    out of it); hashtags anywhere in the caption drive the category.
+    """
+    raw = (text or "").strip()
+    tags = _HASHTAG_RE.findall(raw)
+    title = ""
+    for line in raw.split("\n"):
+        line = re.sub(r"\s+", " ", _HASHTAG_RE.sub("", line)).strip(" \t-\u2013\u2014|\u2022\u00b7")
+        if line:
+            title = line[:120]
+            break
+    return title, tags
+
+
 async def sync_channel(limit: int = 300) -> dict:
     """Import new videos from the private channel. Returns counts."""
     client = await tg.client()
@@ -603,9 +646,27 @@ async def sync_channel(limit: int = 300) -> dict:
                     con.execute(
                         "UPDATE videos SET duration=?, file_size=?, mime=? WHERE id=?",
                         (attrs["duration"], attrs["file_size"], attrs["mime"], exists["id"]))
+                # caption rules for already-imported rows: hashtag category
+                # applies while a video is still Uncategorized, and the title
+                # is cleaned only when it still equals the raw first line the
+                # old logic stored (an admin-edited title is never overwritten)
+                cap_title, cap_tags = _parse_caption(msg.text or "")
+                if cap_title or cap_tags:
+                    row = con.execute(
+                        "SELECT v.title, c.slug AS cat_slug FROM videos v "
+                        "LEFT JOIN categories c ON c.id = v.category_id WHERE v.id=?",
+                        (exists["id"],)).fetchone()
+                    if cap_tags and row["cat_slug"] in (None, "uncategorized"):
+                        con.execute("UPDATE videos SET category_id=? WHERE id=?",
+                                    (_category_id_for_tag(con, cap_tags[0]), exists["id"]))
+                    old_style = (msg.text or "").strip().split("\n")[0][:120]
+                    if cap_title and row["title"] == old_style and cap_title != row["title"]:
+                        con.execute("UPDATE videos SET title=? WHERE id=?",
+                                    (cap_title, exists["id"]))
                 skipped += 1
                 continue
-            title = (msg.text or "").strip().split("\n")[0][:120] or attrs["file_name"] or "Untitled video"
+            cap_title, cap_tags = _parse_caption(msg.text or "")
+            title = cap_title or attrs["file_name"] or "Untitled video"
             # v6: if this message is a user upload (website -> channel), link it
             # to that user and hold it in the moderation queue (unpublished).
             pu = con.execute(
@@ -635,14 +696,15 @@ async def sync_channel(limit: int = 300) -> dict:
                     "WHERE id IN (SELECT id FROM videos WHERE tg_message_id=?) AND category_id IS NULL",
                     (msg.id,))
             else:
+                cat_id = _category_id_for_tag(con, cap_tags[0]) if cap_tags else None
                 con.execute(
                     """INSERT INTO videos
                        (title, description, category_id, tg_channel_id, tg_message_id,
                         tg_file_unique_id, file_size, duration, mime, visibility,
                         published_at)
-                       VALUES (?, ?, (SELECT id FROM categories WHERE slug='uncategorized'),
+                       VALUES (?, ?, COALESCE(?, (SELECT id FROM categories WHERE slug='uncategorized')),
                                ?, ?, ?, ?, ?, ?, 'published', datetime('now'))""",
-                    (title, (msg.text or "").strip()[:2000], tg.channel_id,
+                    (title, (msg.text or "").strip()[:2000], cat_id, tg.channel_id,
                      msg.id, attrs["unique_id"], attrs["file_size"],
                      attrs["duration"], attrs["mime"]),
                 )
