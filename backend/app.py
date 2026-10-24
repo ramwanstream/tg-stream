@@ -145,6 +145,13 @@ def init_db():
     vcols = [r["name"] for r in con.execute("PRAGMA table_info(videos)")]
     if "featured" not in vcols:
         con.execute("ALTER TABLE videos ADD COLUMN featured INTEGER NOT NULL DEFAULT 0")
+    # v16: many-to-many memberships (a video shows under every hashtag's
+    # category); every video is at least a member of its primary category
+    con.execute("""CREATE TABLE IF NOT EXISTS video_categories (
+                     video_id INTEGER NOT NULL, category_id INTEGER NOT NULL,
+                     PRIMARY KEY (video_id, category_id))""")
+    con.execute("INSERT OR IGNORE INTO video_categories (video_id, category_id) "
+                "SELECT id, category_id FROM videos WHERE category_id IS NOT NULL")
     con.commit()
     con.close()
 
@@ -605,6 +612,17 @@ def _category_id_for_tag(con, tag: str) -> int:
         "INSERT INTO categories (name, slug) VALUES (?,?)", (name, slug)).lastrowid
 
 
+def _sync_memberships(con, video_id: int, tags) -> None:
+    """A video is a member of every hashtag's category (+ its primary)."""
+    ids = {_category_id_for_tag(con, t) for t in tags}
+    row = con.execute("SELECT category_id FROM videos WHERE id=?", (video_id,)).fetchone()
+    if row and row["category_id"]:
+        ids.add(row["category_id"])
+    for cid in ids:
+        con.execute("INSERT OR IGNORE INTO video_categories (video_id, category_id) "
+                    "VALUES (?,?)", (video_id, cid))
+
+
 def _parse_caption(text: str):
     """Channel caption -> (title, hashtags).
 
@@ -663,6 +681,7 @@ async def sync_channel(limit: int = 300) -> dict:
                     if cap_title and row["title"] == old_style and cap_title != row["title"]:
                         con.execute("UPDATE videos SET title=? WHERE id=?",
                                     (cap_title, exists["id"]))
+                    _sync_memberships(con, exists["id"], cap_tags)
                 skipped += 1
                 continue
             cap_title, cap_tags = _parse_caption(msg.text or "")
@@ -695,9 +714,13 @@ async def sync_channel(limit: int = 300) -> dict:
                     "UPDATE videos SET category_id=(SELECT id FROM categories WHERE slug='uncategorized') "
                     "WHERE id IN (SELECT id FROM videos WHERE tg_message_id=?) AND category_id IS NULL",
                     (msg.id,))
+                vrow = con.execute("SELECT id FROM videos WHERE tg_file_unique_id=?",
+                                   (attrs["unique_id"],)).fetchone()
+                if vrow:
+                    _sync_memberships(con, vrow["id"], cap_tags)
             else:
                 cat_id = _category_id_for_tag(con, cap_tags[0]) if cap_tags else None
-                con.execute(
+                cur = con.execute(
                     """INSERT INTO videos
                        (title, description, category_id, tg_channel_id, tg_message_id,
                         tg_file_unique_id, file_size, duration, mime, visibility,
@@ -708,6 +731,7 @@ async def sync_channel(limit: int = 300) -> dict:
                      msg.id, attrs["unique_id"], attrs["file_size"],
                      attrs["duration"], attrs["mime"]),
                 )
+                _sync_memberships(con, cur.lastrowid, cap_tags)
             added += 1
         con.commit()
     finally:
@@ -815,7 +839,9 @@ def list_videos(q: Optional[str] = None, category: Optional[str] = None,
         where.append("(v.title LIKE ? OR v.description LIKE ?)")
         params += [f"%{q}%", f"%{q}%"]
     if category and category != "all":
-        where.append("c.slug = ?")
+        where.append("""v.id IN (SELECT vc.video_id FROM video_categories vc
+                        JOIN categories cc ON cc.id = vc.category_id
+                        WHERE cc.slug = ?)""")
         params.append(category)
     if sort == "popular":
         order = "v.view_count DESC, v.id DESC"
@@ -874,7 +900,8 @@ def list_categories():
     con = db()
     rows = con.execute(
         """SELECT c.id, c.slug, c.name, COUNT(v.id) AS count FROM categories c
-           LEFT JOIN videos v ON v.category_id=c.id AND v.visibility='published'
+           LEFT JOIN video_categories vc ON vc.category_id=c.id
+           LEFT JOIN videos v ON v.id=vc.video_id AND v.visibility='published'
            GROUP BY c.id ORDER BY count DESC, c.name""").fetchall()
     con.close()
     return [dict(r) for r in rows]
@@ -1708,6 +1735,9 @@ def admin_category_delete(cat_id: int, _: None = Depends(require_admin)):
         raise HTTPException(400, "The Uncategorized category cannot be deleted")
     unc = con.execute("SELECT id FROM categories WHERE slug='uncategorized'").fetchone()["id"]
     con.execute("UPDATE videos SET category_id=? WHERE category_id=?", (unc, cat_id))
+    con.execute("DELETE FROM video_categories WHERE category_id=?", (cat_id,))
+    con.execute("INSERT OR IGNORE INTO video_categories (video_id, category_id) "
+                "SELECT id, ? FROM videos WHERE category_id=?", (unc, unc))
     con.execute("DELETE FROM categories WHERE id=?", (cat_id,))
     con.commit()
     con.close()
@@ -1928,6 +1958,11 @@ def admin_edit(video_id: int, body: dict, _: None = Depends(require_admin)):
         raise HTTPException(400, "Nothing to update")
     con = db()
     con.execute(f"UPDATE videos SET {', '.join(fields)} WHERE id=?", params + [video_id])
+    if "category" in body:
+        row = con.execute("SELECT category_id FROM videos WHERE id=?", (video_id,)).fetchone()
+        if row and row["category_id"]:
+            con.execute("INSERT OR IGNORE INTO video_categories (video_id, category_id) "
+                        "VALUES (?,?)", (video_id, row["category_id"]))
     con.commit()
     con.close()
     return {"ok": True}

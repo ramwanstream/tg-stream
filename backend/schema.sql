@@ -151,3 +151,10 @@ CREATE INDEX IF NOT EXISTS idx_reports_status ON reports(status, created_at DESC
 INSERT OR IGNORE INTO settings (key, value) VALUES
   ('announcement', ''),
   ('maintenance_mode', '0');
+
+-- v16: a video belongs to EVERY category from its caption hashtags
+CREATE TABLE IF NOT EXISTS video_categories (
+  video_id INTEGER NOT NULL REFERENCES videos(id),
+  category_id INTEGER NOT NULL REFERENCES categories(id),
+  PRIMARY KEY (video_id, category_id)
+);
