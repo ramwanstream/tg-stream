@@ -2313,8 +2313,9 @@ async def _promo_worker():
 
 
 @app.post("/api/admin/promo-test")
-async def admin_promo_test(request: Request):
-    require_admin(request)
+async def admin_promo_test(request: Request,
+                           x_admin_token: Optional[str] = Header(None)):
+    require_admin(x_admin_token)
     body = await request.json()
     vid = int(body.get("video_id") or 0)
     con = db()
