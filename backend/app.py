@@ -154,6 +154,10 @@ def init_db():
     con.execute("""CREATE TABLE IF NOT EXISTS video_categories (
                      video_id INTEGER NOT NULL, category_id INTEGER NOT NULL,
                      PRIMARY KEY (video_id, category_id))""")
+    # v20: one row per video already promoted to the public promo channel
+    con.execute("""CREATE TABLE IF NOT EXISTS promo_posts (
+                     video_id INTEGER PRIMARY KEY,
+                     posted_at TEXT NOT NULL DEFAULT (datetime('now')))""")
     con.execute("INSERT OR IGNORE INTO video_categories (video_id, category_id) "
                 "SELECT id, category_id FROM videos WHERE category_id IS NOT NULL")
     con.commit()
@@ -2218,6 +2222,111 @@ def health():
 async def _startup():
     asyncio.create_task(_poller())
     asyncio.create_task(_thumb_worker())
+    asyncio.create_task(_promo_worker())
+
+
+# ------------------------------------------------- public promo channel
+# v20: posts watch-link cards (thumbnail + title + site link) for new videos
+# to the PUBLIC promo channel (@StreamHubWatch) — the shareable front door
+# that turns Telegram discovery + forwards into website views (and ad
+# impressions). Strictly throttled so it never looks like spam: max 6 cards
+# per day, at least 20 minutes apart, only videos published in the last
+# 48 hours that already have a thumbnail. The channel id lives in
+# data/promo.json (same pattern as channel.json) so it can change without
+# a code deploy; absent file = promo posting off.
+def _promo_channel_id():
+    p = DATA_DIR / "promo.json"
+    if p.exists():
+        try:
+            return json.loads(p.read_text()).get("channel_id")
+        except Exception:
+            return None
+    return None
+
+
+def _promo_base() -> str:
+    return os.environ.get("PUBLIC_BASE_URL") or "https://ramwanstream.alwaysdata.net"
+
+
+async def _post_promo_card(video: dict) -> bool:
+    ch_id = _promo_channel_id()
+    if not ch_id:
+        return False
+    tp = video.get("thumb_path") or ""
+    if not tp:
+        return False
+    p = Path(tp) if os.path.isabs(tp) else (BASE_DIR.parent / tp)
+    if not p.exists():
+        return False
+    client = await tg.client()
+    ent = await client.get_entity(int(ch_id))
+    title = (video.get("title") or "Watch now")[:120]
+    caption = (f"🎬 {title}\n\n▶️ Watch in HD: {_promo_base()}/watch.html?v={video['id']}\n"
+               "🔞 Adults only (18+)")
+    await client.send_file(ent, file=str(p), caption=caption)
+    con = db()
+    try:
+        con.execute("INSERT OR IGNORE INTO promo_posts (video_id, posted_at) "
+                    "VALUES (?, datetime('now'))", (video["id"],))
+        con.commit()
+    finally:
+        con.close()
+    return True
+
+
+async def _promo_tick():
+    if not _promo_channel_id():
+        return
+    con = db()
+    try:
+        today = con.execute(
+            "SELECT COUNT(*) c FROM promo_posts WHERE date(posted_at)=date('now')"
+        ).fetchone()["c"]
+        if today >= 6:
+            return
+        last = con.execute("SELECT MAX(posted_at) m FROM promo_posts").fetchone()["m"]
+        if last:
+            last_dt = datetime.fromisoformat(last).replace(tzinfo=timezone.utc)
+            if (datetime.now(timezone.utc) - last_dt).total_seconds() < 1200:
+                return
+        row = con.execute(
+            """SELECT v.id, v.title, v.thumb_path FROM videos v
+               LEFT JOIN promo_posts pp ON pp.video_id = v.id
+               WHERE v.visibility='published' AND pp.video_id IS NULL
+                 AND v.thumb_path IS NOT NULL AND v.thumb_path != ''
+                 AND v.published_at >= datetime('now','-48 hours')
+               ORDER BY v.id DESC LIMIT 1""").fetchone()
+    finally:
+        con.close()
+    if row:
+        await _post_promo_card(dict(row))
+
+
+async def _promo_worker():
+    await asyncio.sleep(90)  # let startup/sync settle first
+    while True:
+        try:
+            await _promo_tick()
+        except Exception as e:
+            print("promo worker error:", e, flush=True)
+        await asyncio.sleep(600)
+
+
+@app.post("/api/admin/promo-test")
+async def admin_promo_test(request: Request):
+    require_admin(request)
+    body = await request.json()
+    vid = int(body.get("video_id") or 0)
+    con = db()
+    try:
+        row = con.execute("SELECT id, title, thumb_path FROM videos WHERE id=?",
+                          (vid,)).fetchone()
+    finally:
+        con.close()
+    if not row:
+        raise HTTPException(404, "video not found")
+    ok = await _post_promo_card(dict(row))
+    return {"ok": ok, "video_id": vid}
 
 
 # ------------------------------------------------------- promotion / SEO
