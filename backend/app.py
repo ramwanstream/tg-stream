@@ -742,29 +742,65 @@ async def sync_channel(limit: int = 300) -> dict:
     return {"added": added, "skipped": skipped}
 
 
-async def _fetch_thumbs():
-    """Download Telegram video thumbs for videos missing one."""
+_thumbs_busy = False
+thumb_last_error = None
+
+
+async def _fetch_thumbs(limit: int = 40):
+    """Download Telegram video thumbs for videos missing one.
+
+    v18: newest first (the homepage fills in first), single-flight (sync
+    triggers and the background worker never run two passes at once), and
+    videos whose channel message has no downloadable thumb get a ''
+    sentinel so they stop consuming batch slots on every pass.
+    """
+    global _thumbs_busy, thumb_last_error
+    if _thumbs_busy:
+        return
+    _thumbs_busy = True
     try:
         client = await tg.client()
         con = db()
         rows = con.execute(
             "SELECT id, tg_message_id FROM videos WHERE thumb_path IS NULL "
-            "AND tg_message_id IS NOT NULL LIMIT 25").fetchall()
+            "AND tg_message_id IS NOT NULL ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         for r in rows:
             try:
                 msg = await client.get_messages(tg.channel_id, ids=r["tg_message_id"])
                 if not msg or not msg.media:
+                    con.execute("UPDATE videos SET thumb_path='' WHERE id=?", (r["id"],))
+                    con.commit()
                     continue
                 dest = str(THUMB_DIR / f"{r['id']}.jpg")
                 got = await client.download_media(msg, file=dest, thumb=-1)
                 if got:
                     con.execute("UPDATE videos SET thumb_path=? WHERE id=?", (dest, r["id"]))
-                    con.commit()
-            except Exception:
+                else:
+                    con.execute("UPDATE videos SET thumb_path='' WHERE id=?", (r["id"],))
+                con.commit()
+            except Exception as e:
+                thumb_last_error = f"{type(e).__name__}: {str(e)[:160]}"
+                if type(e).__name__ == "FloodWaitError":
+                    break  # let the worker retry after the cooldown
                 continue
+            await asyncio.sleep(0.15)
         con.close()
     except Exception:
         pass
+    finally:
+        _thumbs_busy = False
+
+
+async def _thumb_worker():
+    """Background: keep draining the thumbnail backlog between syncs."""
+    await asyncio.sleep(45)  # let startup + first sync settle
+    while True:
+        try:
+            if tg.configured() and tg.channel_id:
+                await _fetch_thumbs(limit=40)
+        except Exception:
+            pass
+        await asyncio.sleep(45)
 
 
 async def _poller():
@@ -2122,6 +2158,7 @@ def health():
 @app.on_event("startup")
 async def _startup():
     asyncio.create_task(_poller())
+    asyncio.create_task(_thumb_worker())
 
 
 # serve the static frontend (../web) at / — mounted LAST so /api/* routes win
