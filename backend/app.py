@@ -281,7 +281,12 @@ async def secure_headers(request: Request, call_next):
     """Hardened response headers (clickjacking, MIME sniffing, XSS)."""
     resp = await call_next(request)
     resp.headers["X-Content-Type-Options"] = "nosniff"
-    resp.headers["X-Frame-Options"] = "SAMEORIGIN"
+    # Framing: the site doubles as a Telegram Mini App, so Telegram's web
+    # client must be allowed to embed it. X-Frame-Options has no allowlist,
+    # so it is replaced by CSP frame-ancestors (self + Telegram origins);
+    # every other origin stays blocked against clickjacking.
+    resp.headers["Content-Security-Policy"] = (
+        "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org")
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
     # API responses are never pages — but static HTML is served too, so keep
     # the policy permissive enough for the site's own inline scripts/styles.
