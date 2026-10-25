@@ -137,6 +137,10 @@ def init_db():
         con.execute("ALTER TABLE users ADD COLUMN role TEXT NOT NULL DEFAULT 'user'")
     if "banned" not in ucols:
         con.execute("ALTER TABLE users ADD COLUMN banned INTEGER NOT NULL DEFAULT 0")
+    # v19 (security): token version — bumping it instantly revokes all of a
+    # user's existing login tokens (password reset, ban).
+    if "token_version" not in ucols:
+        con.execute("ALTER TABLE users ADD COLUMN token_version INTEGER NOT NULL DEFAULT 0")
     # v8: comment replies
     ccols = [r["name"] for r in con.execute("PRAGMA table_info(comments)")]
     if "parent_id" not in ccols:
@@ -179,24 +183,48 @@ def rate_limit(key: str, limit: int, window_s: int) -> bool:
 
 # ---------------------------------------------------------------- auth
 
+# OWASP-recommended cost for PBKDF2-HMAC-SHA256. The iteration count is
+# stored inside the hash string so older hashes stay verifiable and can be
+# upgraded transparently at login.
+PBKDF2_ITERATIONS = 600_000
+LEGACY_PBKDF2_ITERATIONS = 200_000
+
+
 def hash_password(password: str) -> str:
     salt = secrets.token_hex(16)
-    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 200_000)
-    return f"pbkdf2${salt}${dk.hex()}"
+    dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), PBKDF2_ITERATIONS)
+    return f"pbkdf2${PBKDF2_ITERATIONS}${salt}${dk.hex()}"
 
 
 def check_password(password: str, stored: str) -> bool:
     try:
-        _, salt, hexdk = stored.split("$")
-        dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), 200_000)
+        parts = (stored or "").split("$")
+        if len(parts) == 4:        # pbkdf2$<iters>$<salt>$<hex>
+            _, iters, salt, hexdk = parts
+            iterations = int(iters)
+        elif len(parts) == 3:      # legacy pbkdf2$<salt>$<hex> (fixed 200k)
+            _, salt, hexdk = parts
+            iterations = LEGACY_PBKDF2_ITERATIONS
+        else:
+            return False
+        dk = hashlib.pbkdf2_hmac("sha256", password.encode(), salt.encode(), iterations)
         return hmac.compare_digest(dk.hex(), hexdk)
     except Exception:
         return False
 
 
-def make_token(user_id: int) -> str:
+def _hash_needs_upgrade(stored: str) -> bool:
+    try:
+        parts = (stored or "").split("$")
+        return len(parts) != 4 or int(parts[1]) < PBKDF2_ITERATIONS
+    except Exception:
+        return True
+
+
+def make_token(user_id: int, token_version: int = 0) -> str:
     payload = {
         "uid": user_id,
+        "tv": token_version,
         "exp": datetime.now(timezone.utc) + timedelta(days=7),
         "iat": datetime.now(timezone.utc),
     }
@@ -209,9 +237,15 @@ def get_user_from_header(authorization: Optional[str]) -> Optional[dict]:
     try:
         payload = pyjwt.decode(authorization[7:], JWT_SECRET, algorithms=["HS256"])
         con = db()
-        r = con.execute("SELECT id, name, email, created_at, role, banned FROM users WHERE id=?",
+        r = con.execute("SELECT id, name, email, created_at, role, banned, token_version FROM users WHERE id=?",
                         (payload["uid"],)).fetchone()
         con.close()
+        if r is None:
+            return None
+        # Tokens minted before token-versioning carry no "tv" (=0, matching
+        # the column default), so existing sessions survive the upgrade.
+        if int(payload.get("tv") or 0) != int(r["token_version"] or 0):
+            return None
         return row_to_dict(r)
     except Exception:
         return None
@@ -270,9 +304,11 @@ from starlette.middleware.gzip import GZipMiddleware
 app.add_middleware(GZipMiddleware, minimum_size=1000)
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=["*"],
-    allow_methods=["*"],
-    allow_headers=["*"],
+    # The only legitimate consumer is this site itself (same origin,
+    # including inside the Telegram Mini App webview) — no wildcard.
+    allow_origins=["https://ramwanstream.alwaysdata.net"],
+    allow_methods=["GET", "POST", "PATCH", "DELETE", "OPTIONS"],
+    allow_headers=["Authorization", "Content-Type", "X-Admin-Token"],
 )
 
 
@@ -288,8 +324,12 @@ async def secure_headers(request: Request, call_next):
     resp.headers["Content-Security-Policy"] = (
         "frame-ancestors 'self' https://web.telegram.org https://*.telegram.org")
     resp.headers["Referrer-Policy"] = "strict-origin-when-cross-origin"
-    # API responses are never pages — but static HTML is served too, so keep
-    # the policy permissive enough for the site's own inline scripts/styles.
+    # HTTPS is forced at the host; pin browsers to it for a year so a
+    # downgraded/plain-HTTP visit can never happen after the first load.
+    resp.headers["Strict-Transport-Security"] = "max-age=31536000; includeSubDomains"
+    # The site never needs these device APIs (fullscreen / picture-in-picture
+    # for the player are not gated by Permissions-Policy defaults).
+    resp.headers["Permissions-Policy"] = "camera=(), microphone=(), geolocation=(), payment=()"
     return resp
 
 
@@ -1081,8 +1121,8 @@ def signup(body: dict, request: Request):
     name = (body.get("name") or "").strip()[:60]
     email = (body.get("email") or "").strip().lower()[:120]
     password = body.get("password") or ""
-    if not name or "@" not in email or len(password) < 6:
-        raise HTTPException(400, "Name, valid email and 6+ character password required")
+    if not name or "@" not in email or len(password) < 10:
+        raise HTTPException(400, "Name, valid email and 10+ character password required")
     con = db()
     try:
         cur = con.execute(
@@ -1104,16 +1144,27 @@ def login(body: dict, request: Request):
     ip = (request.client.host if request.client else "?")
     if not rate_limit(f"login:{ip}:{email}", 15, 600):
         raise HTTPException(429, "Too many login attempts, wait a few minutes")
+    # Global per-account bucket: slows password guessing even when the
+    # attacker rotates IPs (per-IP limits alone miss that).
+    if not rate_limit(f"loginmail:{email}", 40, 3600):
+        raise HTTPException(429, "Too many login attempts for this account, try later")
     password = body.get("password") or ""
     con = db()
     r = con.execute("SELECT * FROM users WHERE email=?", (email,)).fetchone()
-    con.close()
     if not r or not check_password(password, r["password_hash"]):
+        con.close()
         raise HTTPException(401, "Wrong email or password")
     if r["banned"]:
+        con.close()
         raise HTTPException(403, "This account has been suspended")
+    # Transparently upgrade legacy/weak password hashes to the current cost.
+    if _hash_needs_upgrade(r["password_hash"]):
+        con.execute("UPDATE users SET password_hash=? WHERE id=?",
+                    (hash_password(password), r["id"]))
+        con.commit()
+    con.close()
     u = row_to_dict(r)
-    return {"token": make_token(u["id"]),
+    return {"token": make_token(u["id"], int(u.get("token_version") or 0)),
             "user": {k: u[k] for k in ("id", "name", "email", "created_at")}}
 
 
@@ -1674,7 +1725,9 @@ async def admin_user_update(user_id: int, request: Request, _: None = Depends(re
         con.close()
         raise HTTPException(404, "User not found")
     if "banned" in data:
-        con.execute("UPDATE users SET banned=? WHERE id=?", (1 if data["banned"] else 0, user_id))
+        # Banning also revokes every existing session token immediately.
+        con.execute("UPDATE users SET banned=?, token_version=token_version+1 WHERE id=?",
+                    (1 if data["banned"] else 0, user_id))
         log_action = "user_ban" if data["banned"] else "user_unban"
         log_activity(log_action, f"user:{user_id}", f"{u['name']} <{u['email']}>")
     if "role" in data and data["role"] in ("user", "admin"):
@@ -1682,10 +1735,11 @@ async def admin_user_update(user_id: int, request: Request, _: None = Depends(re
         log_activity("user_role", f"user:{user_id}", f"role -> {data['role']}")
     if data.get("password"):
         pw = str(data["password"])
-        if len(pw) < 6:
+        if len(pw) < 10:
             con.close()
-            raise HTTPException(400, "Password must be 6+ characters")
-        con.execute("UPDATE users SET password_hash=? WHERE id=?",
+            raise HTTPException(400, "Password must be 10+ characters")
+        # A password reset revokes every existing session token immediately.
+        con.execute("UPDATE users SET password_hash=?, token_version=token_version+1 WHERE id=?",
                     (hash_password(pw), user_id))
         log_activity("user_pw_reset", f"user:{user_id}", f"{u['name']} <{u['email']}>")
     con.commit()
