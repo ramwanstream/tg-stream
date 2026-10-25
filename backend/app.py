@@ -2220,8 +2220,77 @@ async def _startup():
     asyncio.create_task(_thumb_worker())
 
 
-# serve the static frontend (../web) at / — mounted LAST so /api/* routes win
+# ------------------------------------------------------- promotion / SEO
+# Per-video link previews: when a watch link is shared (Telegram, WhatsApp,
+# X...), preview bots fetch the raw HTML without running JS — so the watch
+# page is served through this route, which injects THAT video's title and
+# thumbnail into the OG/Twitter tags. Visitors get the identical page.
+SITE_BASE = "https://ramwanstream.alwaysdata.net"
 WEB_DIR = (BASE_DIR / ".." / "web").resolve()
+
+
+def _meta_escape(s: str) -> str:
+    return (s or "").replace("&", "&amp;").replace('"', "&quot;").replace("<", "&lt;")
+
+
+def _swap_meta(html: str, attr: str, value: str) -> str:
+    return re.sub(r'(<meta (?:property|name)="' + re.escape(attr) + r'" content=")[^"]*(")',
+                  lambda m: m.group(1) + _meta_escape(value) + m.group(2), html, count=1)
+
+
+@app.get("/watch.html")
+def watch_page(v: int = 0):
+    from fastapi.responses import HTMLResponse
+    html = (WEB_DIR / "watch.html").read_text(encoding="utf-8")
+    if v:
+        con = db()
+        r = con.execute("SELECT title, thumb_path FROM videos WHERE id=? AND visibility='published'",
+                        (v,)).fetchone()
+        con.close()
+        if r:
+            title = (r["title"] or "Watch on StreamHub")[:120]
+            desc = f"Watch {title} online in HD on StreamHub — free streaming, no download needed."
+            image = f"{SITE_BASE}/api/thumb/{v}" if r["thumb_path"] else f"{SITE_BASE}/og-default.jpg"
+            html = re.sub(r"<title>.*?</title>", f"<title>{_meta_escape(title)} — StreamHub</title>",
+                          html, count=1)
+            for attr, val in (("og:title", title), ("twitter:title", title),
+                              ("og:description", desc), ("twitter:description", desc),
+                              ("description", desc), ("og:image", image),
+                              ("twitter:image", image),
+                              ("og:url", f"{SITE_BASE}/watch.html?v={v}")):
+                html = _swap_meta(html, attr, val)
+    return HTMLResponse(html)
+
+
+@app.get("/sitemap.xml")
+def sitemap():
+    from fastapi.responses import Response
+    con = db()
+    rows = con.execute(
+        "SELECT id, COALESCE(published_at, created_at) d FROM videos "
+        "WHERE visibility='published' ORDER BY id DESC LIMIT 5000").fetchall()
+    con.close()
+    parts = ['<?xml version="1.0" encoding="UTF-8"?>',
+             '<urlset xmlns="http://www.sitemaps.org/schemas/sitemap/0.9">',
+             f"<url><loc>{SITE_BASE}/</loc><changefreq>hourly</changefreq><priority>1.0</priority></url>",
+             f"<url><loc>{SITE_BASE}/library.html</loc><changefreq>daily</changefreq><priority>0.5</priority></url>"]
+    for r in rows:
+        lastmod = f"<lastmod>{str(r['d'])[:10]}</lastmod>" if r["d"] else ""
+        parts.append(f"<url><loc>{SITE_BASE}/watch.html?v={r['id']}</loc>{lastmod}"
+                     f"<changefreq>weekly</changefreq><priority>0.7</priority></url>")
+    parts.append("</urlset>")
+    return Response("\n".join(parts), media_type="application/xml")
+
+
+@app.get("/robots.txt")
+def robots():
+    from fastapi.responses import PlainTextResponse
+    return PlainTextResponse(
+        "User-agent: *\nAllow: /\n\n"
+        f"Sitemap: {SITE_BASE}/sitemap.xml\n")
+
+
+# serve the static frontend (../web) at / — mounted LAST so /api/* routes win
 if WEB_DIR.exists():
     class CachedStatic(StaticFiles):
         async def get_response(self, path: str, scope):
