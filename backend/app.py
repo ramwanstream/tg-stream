@@ -2187,6 +2187,11 @@ def admin_delete(video_id: int, _: None = Depends(require_admin)):
     """Remove the website listing only — the Telegram file is never touched."""
     con = db()
     r = con.execute("SELECT thumb_path FROM videos WHERE id=?", (video_id,)).fetchone()
+    # video_categories references videos WITHOUT ON DELETE CASCADE (v16),
+    # so every categorized video's delete failed on the FK — clear the
+    # memberships (and any promo record) before deleting the listing.
+    con.execute("DELETE FROM video_categories WHERE video_id=?", (video_id,))
+    con.execute("DELETE FROM promo_posts WHERE video_id=?", (video_id,))
     con.execute("DELETE FROM videos WHERE id=?", (video_id,))
     con.commit()
     con.close()
