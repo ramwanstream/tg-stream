@@ -158,6 +158,12 @@ def init_db():
     con.execute("""CREATE TABLE IF NOT EXISTS promo_posts (
                      video_id INTEGER PRIMARY KEY,
                      posted_at TEXT NOT NULL DEFAULT (datetime('now')))""")
+    # v21: Telegram document id — the cross-channel file identity that lets
+    # the site switch its source channel without duplicating the library
+    vcols_now = [r[1] for r in con.execute("PRAGMA table_info(videos)").fetchall()]
+    if "tg_doc_id" not in vcols_now:
+        con.execute("ALTER TABLE videos ADD COLUMN tg_doc_id TEXT")
+    con.execute("CREATE INDEX IF NOT EXISTS idx_videos_tg_doc_id ON videos(tg_doc_id)")
     con.execute("INSERT OR IGNORE INTO video_categories (video_id, category_id) "
                 "SELECT id, category_id FROM videos WHERE category_id IS NOT NULL")
     con.commit()
@@ -443,18 +449,22 @@ class TelegramSource(MediaSource):
         """Fresh document reference, cached ~90s. File references can expire;
         on expiry the caller drops the cache entry and retries once."""
         now = time.time()
-        hit = self._doc_cache.get(self.message_id)
+        # v21: the video's OWN channel — listings can come from different
+        # channels now (content source vs upload channel), and the doc
+        # cache key must include the channel for the same reason.
+        key = (self.channel_id, self.message_id)
+        hit = self._doc_cache.get(key)
         if hit and hit[1] > now:
             return hit[0]
         # Re-fetch the message: Telegram file references expire,
         # a fresh fetch always gives a valid one.
-        msg = await client.get_messages(self.mgr.channel_id, ids=self.message_id)
+        msg = await client.get_messages(self.channel_id, ids=self.message_id)
         if not msg or not msg.media:
             raise FileNotFoundError("Telegram message/file no longer available")
         doc = getattr(msg.media, "document", None)
         if doc is None:
             raise FileNotFoundError("No downloadable file in this message")
-        self._doc_cache[self.message_id] = (doc, now + 90)
+        self._doc_cache[key] = (doc, now + 90)
         return doc
 
     async def read_range(self, start: int, end: int) -> AsyncIterator[bytes]:
@@ -510,6 +520,9 @@ class TelegramManager:
         self._client = None
         self._lock = asyncio.Lock()
         self.channel_id: Optional[int] = None
+        # v21: user uploads go to their OWN channel (kept separate from the
+        # content source channel); falls back to channel_id when unset.
+        self.upload_channel_id: Optional[int] = None
         self.last_error: Optional[str] = None
         self.last_sync: Optional[str] = None
         self._load_channel()
@@ -518,15 +531,25 @@ class TelegramManager:
         p = DATA_DIR / "channel.json"
         if p.exists():
             try:
-                self.channel_id = json.loads(p.read_text()).get("channel_id")
+                data = json.loads(p.read_text())
+                self.channel_id = data.get("channel_id")
+                self.upload_channel_id = data.get("upload_channel_id")
             except Exception:
                 pass
 
-    def save_channel(self, channel_id: int):
+    def save_channel(self, channel_id: int, upload_channel_id="keep"):
         self.channel_id = channel_id
+        if upload_channel_id != "keep":
+            self.upload_channel_id = upload_channel_id
         p = DATA_DIR / "channel.json"
-        p.write_text(json.dumps({"channel_id": channel_id}))
+        data = {"channel_id": channel_id}
+        if self.upload_channel_id:
+            data["upload_channel_id"] = self.upload_channel_id
+        p.write_text(json.dumps(data))
         os.chmod(p, 0o600)
+
+    def effective_upload_channel(self) -> Optional[int]:
+        return self.upload_channel_id or self.channel_id
 
     def configured(self) -> bool:
         return bool(TG_API_ID and TG_API_HASH)
@@ -570,6 +593,7 @@ class TelegramManager:
 
     async def status(self) -> dict:
         st = {"configured": self.configured(), "channel_id": self.channel_id,
+              "upload_channel_id": self.upload_channel_id,
               "last_sync": self.last_sync, "last_error": self.last_error}
         if not self.configured():
             st["connected"] = False
@@ -591,9 +615,9 @@ tg = TelegramManager()
 def get_source_for_video(video: dict) -> MediaSource:
     if video.get("local_path"):
         return LocalFileSource(video["local_path"], video.get("mime") or "video/mp4")
-    if not tg.channel_id or not video.get("tg_message_id"):
+    if not video.get("tg_channel_id") or not video.get("tg_message_id"):
         raise HTTPException(503, "Video source not configured yet")
-    return TelegramSource(tg, tg.channel_id, video["tg_message_id"],
+    return TelegramSource(tg, video["tg_channel_id"], video["tg_message_id"],
                           video["file_size"], video.get("mime"))
 
 
@@ -689,99 +713,133 @@ def _parse_caption(text: str):
     return title, tags
 
 
-async def sync_channel(limit: int = 300) -> dict:
-    """Import new videos from the private channel. Returns counts."""
+def _ingest_one(con, channel_id: int, msg, *, allow_uploads: bool) -> str:
+    """Import a single channel message into the library.
+
+    Returns "added", "skipped" (already listed) or "ignored" (not a video).
+    The caller owns the transaction (commit). v21: a listing's identity is
+    BOTH channel:message AND the Telegram document id — the same file
+    arriving from a different channel never creates a second listing.
+    """
+    attrs = _video_attrs(msg)
+    if not attrs:
+        return "ignored"
+    doc_id = attrs["unique_id"]  # Telegram document id = the file itself
+    # stable identity: a message's media never changes
+    attrs["unique_id"] = f"{channel_id}:{msg.id}"
+    exists = con.execute(
+        "SELECT id, duration, file_size, mime, tg_doc_id FROM videos WHERE tg_file_unique_id=?",
+        (attrs["unique_id"],)).fetchone()
+    if exists:
+        if not exists["tg_doc_id"] and doc_id:
+            con.execute("UPDATE videos SET tg_doc_id=? WHERE id=?",
+                        (doc_id, exists["id"]))
+        # backfill: rows first imported without duration (e.g. sent as a
+        # plain document) get their real length once Telegram reports it
+        if (not exists["duration"]) and attrs["duration"]:
+            con.execute(
+                "UPDATE videos SET duration=?, file_size=?, mime=? WHERE id=?",
+                (attrs["duration"], attrs["file_size"], attrs["mime"], exists["id"]))
+        # caption rules for already-imported rows: hashtag category
+        # applies while a video is still Uncategorized, and the title
+        # is cleaned only when it still equals the raw first line the
+        # old logic stored (an admin-edited title is never overwritten)
+        cap_title, cap_tags = _parse_caption(msg.text or "")
+        if cap_title or cap_tags:
+            row = con.execute(
+                "SELECT v.title, c.slug AS cat_slug FROM videos v "
+                "LEFT JOIN categories c ON c.id = v.category_id WHERE v.id=?",
+                (exists["id"],)).fetchone()
+            if cap_tags and row["cat_slug"] in (None, "uncategorized"):
+                con.execute("UPDATE videos SET category_id=? WHERE id=?",
+                            (_category_id_for_tag(con, cap_tags[0]), exists["id"]))
+            old_style = (msg.text or "").strip().split("\n")[0][:120]
+            if cap_title and row["title"] == old_style and cap_title != row["title"]:
+                con.execute("UPDATE videos SET title=? WHERE id=?",
+                            (cap_title, exists["id"]))
+            _sync_memberships(con, exists["id"], cap_tags)
+        return "skipped"
+    # v21: the same file is already listed from another channel (e.g. the
+    # previous source channel) — never create a duplicate listing for it
+    if doc_id:
+        twin = con.execute("SELECT id FROM videos WHERE tg_doc_id=?",
+                           (doc_id,)).fetchone()
+        if twin:
+            return "skipped"
+    cap_title, cap_tags = _parse_caption(msg.text or "")
+    title = cap_title or attrs["file_name"] or "Untitled video"
+    # v6: if this message is a user upload (website -> channel), link it
+    # to that user and hold it in the moderation queue (unpublished).
+    pu = None
+    if allow_uploads:
+        pu = con.execute(
+            "SELECT id, user_id, title, description, category_id FROM pending_uploads "
+            "WHERE tg_message_id=? AND status='sent'", (msg.id,)).fetchone()
+    if pu:
+        # moderation ON  -> hold as unpublished for admin review
+        # moderation OFF -> publish immediately
+        moderate = get_setting("moderation_enabled", "1") == "1"
+        vis = "unpublished" if moderate else "published"
+        pub_at = "NULL" if moderate else "datetime('now')"
+        con.execute(
+            f"""INSERT INTO videos
+               (title, description, category_id, tg_channel_id, tg_message_id,
+                tg_file_unique_id, tg_doc_id, file_size, duration, mime, visibility,
+                published_at, uploaded_by)
+               VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, '{vis}', {pub_at}, ?)""",
+            (pu["title"] or title, pu["description"] or "",
+             pu["category_id"] or None, channel_id,
+             msg.id, attrs["unique_id"], doc_id, attrs["file_size"],
+             attrs["duration"], attrs["mime"], pu["user_id"]),
+        )
+        con.execute("UPDATE pending_uploads SET status='done' WHERE id=?", (pu["id"],))
+        # fall back to Uncategorized if the upload had no category
+        con.execute(
+            "UPDATE videos SET category_id=(SELECT id FROM categories WHERE slug='uncategorized') "
+            "WHERE id IN (SELECT id FROM videos WHERE tg_message_id=?) AND category_id IS NULL",
+            (msg.id,))
+        vrow = con.execute("SELECT id FROM videos WHERE tg_file_unique_id=?",
+                           (attrs["unique_id"],)).fetchone()
+        if vrow:
+            _sync_memberships(con, vrow["id"], cap_tags)
+    else:
+        cat_id = _category_id_for_tag(con, cap_tags[0]) if cap_tags else None
+        cur = con.execute(
+            """INSERT INTO videos
+               (title, description, category_id, tg_channel_id, tg_message_id,
+                tg_file_unique_id, tg_doc_id, file_size, duration, mime, visibility,
+                published_at)
+               VALUES (?, ?, COALESCE(?, (SELECT id FROM categories WHERE slug='uncategorized')),
+                       ?, ?, ?, ?, ?, ?, ?, 'published', datetime('now'))""",
+            (title, (msg.text or "").strip()[:2000], cat_id, channel_id,
+             msg.id, attrs["unique_id"], doc_id, attrs["file_size"],
+             attrs["duration"], attrs["mime"]),
+        )
+        _sync_memberships(con, cur.lastrowid, cap_tags)
+    return "added"
+
+
+async def sync_channel(limit: int = 300, channel_id: int = None) -> dict:
+    """Import new videos from a channel (default: the content source).
+
+    v21: the content source (@ph_vid) and the user-upload channel are
+    separate — pending-upload matching only happens when syncing the
+    channel uploads actually go to.
+    """
     client = await tg.client()
-    if not tg.channel_id:
+    chan = channel_id or tg.channel_id
+    if not chan:
         raise RuntimeError("Channel not set (see /admin setup)")
+    allow_uploads = chan == tg.effective_upload_channel()
     added, skipped = 0, 0
     con = db()
     try:
-        async for msg in client.iter_messages(tg.channel_id, limit=limit):
-            attrs = _video_attrs(msg)
-            if not attrs:
-                continue
-            # stable identity: a message's media never changes
-            attrs["unique_id"] = f"{tg.channel_id}:{msg.id}"
-            exists = con.execute(
-                "SELECT id, duration, file_size, mime FROM videos WHERE tg_file_unique_id=?",
-                (attrs["unique_id"],)).fetchone()
-            if exists:
-                # backfill: rows first imported without duration (e.g. sent as a
-                # plain document) get their real length once Telegram reports it
-                if (not exists["duration"]) and attrs["duration"]:
-                    con.execute(
-                        "UPDATE videos SET duration=?, file_size=?, mime=? WHERE id=?",
-                        (attrs["duration"], attrs["file_size"], attrs["mime"], exists["id"]))
-                # caption rules for already-imported rows: hashtag category
-                # applies while a video is still Uncategorized, and the title
-                # is cleaned only when it still equals the raw first line the
-                # old logic stored (an admin-edited title is never overwritten)
-                cap_title, cap_tags = _parse_caption(msg.text or "")
-                if cap_title or cap_tags:
-                    row = con.execute(
-                        "SELECT v.title, c.slug AS cat_slug FROM videos v "
-                        "LEFT JOIN categories c ON c.id = v.category_id WHERE v.id=?",
-                        (exists["id"],)).fetchone()
-                    if cap_tags and row["cat_slug"] in (None, "uncategorized"):
-                        con.execute("UPDATE videos SET category_id=? WHERE id=?",
-                                    (_category_id_for_tag(con, cap_tags[0]), exists["id"]))
-                    old_style = (msg.text or "").strip().split("\n")[0][:120]
-                    if cap_title and row["title"] == old_style and cap_title != row["title"]:
-                        con.execute("UPDATE videos SET title=? WHERE id=?",
-                                    (cap_title, exists["id"]))
-                    _sync_memberships(con, exists["id"], cap_tags)
+        async for msg in client.iter_messages(chan, limit=limit):
+            r = _ingest_one(con, chan, msg, allow_uploads=allow_uploads)
+            if r == "added":
+                added += 1
+            elif r == "skipped":
                 skipped += 1
-                continue
-            cap_title, cap_tags = _parse_caption(msg.text or "")
-            title = cap_title or attrs["file_name"] or "Untitled video"
-            # v6: if this message is a user upload (website -> channel), link it
-            # to that user and hold it in the moderation queue (unpublished).
-            pu = con.execute(
-                "SELECT id, user_id, title, description, category_id FROM pending_uploads "
-                "WHERE tg_message_id=? AND status='sent'", (msg.id,)).fetchone()
-            if pu:
-                # moderation ON  -> hold as unpublished for admin review
-                # moderation OFF -> publish immediately
-                moderate = get_setting("moderation_enabled", "1") == "1"
-                vis = "unpublished" if moderate else "published"
-                pub_at = "NULL" if moderate else "datetime('now')"
-                con.execute(
-                    f"""INSERT INTO videos
-                       (title, description, category_id, tg_channel_id, tg_message_id,
-                        tg_file_unique_id, file_size, duration, mime, visibility,
-                        published_at, uploaded_by)
-                       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, '{vis}', {pub_at}, ?)""",
-                    (pu["title"] or title, pu["description"] or "",
-                     pu["category_id"] or None, tg.channel_id,
-                     msg.id, attrs["unique_id"], attrs["file_size"],
-                     attrs["duration"], attrs["mime"], pu["user_id"]),
-                )
-                con.execute("UPDATE pending_uploads SET status='done' WHERE id=?", (pu["id"],))
-                # fall back to Uncategorized if the upload had no category
-                con.execute(
-                    "UPDATE videos SET category_id=(SELECT id FROM categories WHERE slug='uncategorized') "
-                    "WHERE id IN (SELECT id FROM videos WHERE tg_message_id=?) AND category_id IS NULL",
-                    (msg.id,))
-                vrow = con.execute("SELECT id FROM videos WHERE tg_file_unique_id=?",
-                                   (attrs["unique_id"],)).fetchone()
-                if vrow:
-                    _sync_memberships(con, vrow["id"], cap_tags)
-            else:
-                cat_id = _category_id_for_tag(con, cap_tags[0]) if cap_tags else None
-                cur = con.execute(
-                    """INSERT INTO videos
-                       (title, description, category_id, tg_channel_id, tg_message_id,
-                        tg_file_unique_id, file_size, duration, mime, visibility,
-                        published_at)
-                       VALUES (?, ?, COALESCE(?, (SELECT id FROM categories WHERE slug='uncategorized')),
-                               ?, ?, ?, ?, ?, ?, 'published', datetime('now'))""",
-                    (title, (msg.text or "").strip()[:2000], cat_id, tg.channel_id,
-                     msg.id, attrs["unique_id"], attrs["file_size"],
-                     attrs["duration"], attrs["mime"]),
-                )
-                _sync_memberships(con, cur.lastrowid, cap_tags)
-            added += 1
         con.commit()
     finally:
         con.close()
@@ -789,6 +847,42 @@ async def sync_channel(limit: int = 300) -> dict:
     # thumbnails for the newly added ones (best-effort, background)
     asyncio.create_task(_fetch_thumbs())
     return {"added": added, "skipped": skipped}
+
+
+async def _sync_pending_uploads() -> dict:
+    """Import website uploads waiting in the upload channel (v21).
+
+    Fetches exactly the messages the upload flow marked 'sent', so the
+    upload channel can hold anything else without it reaching the site.
+    """
+    chan = tg.effective_upload_channel()
+    if not chan:
+        return {"added": 0}
+    con = db()
+    try:
+        rows = con.execute(
+            "SELECT tg_message_id FROM pending_uploads "
+            "WHERE status='sent' AND tg_message_id IS NOT NULL").fetchall()
+    finally:
+        con.close()
+    if not rows:
+        return {"added": 0}
+    client = await tg.client()
+    msgs = await client.get_messages(chan, ids=[r["tg_message_id"] for r in rows])
+    if not isinstance(msgs, list):
+        msgs = [msgs]
+    added = 0
+    con = db()
+    try:
+        for msg in msgs:
+            if msg and _ingest_one(con, chan, msg, allow_uploads=True) == "added":
+                added += 1
+        con.commit()
+    finally:
+        con.close()
+    if added:
+        asyncio.create_task(_fetch_thumbs())
+    return {"added": added}
 
 
 _thumbs_busy = False
@@ -811,11 +905,14 @@ async def _fetch_thumbs(limit: int = 40):
         client = await tg.client()
         con = db()
         rows = con.execute(
-            "SELECT id, tg_message_id FROM videos WHERE thumb_path IS NULL "
+            "SELECT id, tg_message_id, tg_channel_id FROM videos WHERE thumb_path IS NULL "
             "AND tg_message_id IS NOT NULL ORDER BY id DESC LIMIT ?", (limit,)).fetchall()
         for r in rows:
             try:
-                msg = await client.get_messages(tg.channel_id, ids=r["tg_message_id"])
+                # v21: fetch from the video's OWN channel (listings are
+                # multi-channel now — source channel + upload channel)
+                msg = await client.get_messages(r["tg_channel_id"] or tg.channel_id,
+                                                ids=r["tg_message_id"])
                 if not msg or not msg.media:
                     con.execute("UPDATE videos SET thumb_path='' WHERE id=?", (r["id"],))
                     con.commit()
@@ -859,6 +956,9 @@ async def _poller():
         try:
             if tg.configured() and tg.channel_id:
                 await sync_channel(limit=100)
+                # v21: website uploads wait in their own channel — import
+                # exactly the messages the upload flow marked 'sent'
+                await _sync_pending_uploads()
                 tg.last_error = None
         except Exception as e:
             tg.last_error = str(e)[:300]
@@ -1458,7 +1558,9 @@ async def _send_upload_to_telegram(upload_id: int):
         return
     try:
         client = await tg.client()
-        if not tg.channel_id:
+        # v21: uploads go to the dedicated upload channel, NOT the source
+        up_channel = tg.effective_upload_channel()
+        if not up_channel:
             raise RuntimeError("Channel not set")
         con = db()
         con.execute("UPDATE pending_uploads SET status='sending' WHERE id=?", (upload_id,))
@@ -1466,7 +1568,7 @@ async def _send_upload_to_telegram(upload_id: int):
         con.close()
         caption = row["title"]
         msg = await client.send_file(
-            tg.channel_id, row["temp_path"],
+            up_channel, row["temp_path"],
             caption=caption, supports_streaming=True,
             attributes=[])
         con = db()
@@ -1474,9 +1576,9 @@ async def _send_upload_to_telegram(upload_id: int):
                     (msg.id, upload_id))
         con.commit()
         con.close()
-        # nudge the sync so the video appears quickly
+        # nudge the import so the video appears quickly
         try:
-            await sync_channel(limit=10)
+            await _sync_pending_uploads()
         except Exception:
             pass
     except Exception as e:
@@ -1492,7 +1594,7 @@ async def upload_video(request: Request, user: dict = Depends(require_user)):
     """YouTube-style upload: video file + title -> Telegram channel (moderated)."""
     if get_setting("uploads_enabled", "1") != "1":
         raise HTTPException(403, "Uploads are currently disabled")
-    if not tg.configured() or not tg.channel_id:
+    if not tg.configured() or not tg.effective_upload_channel():
         raise HTTPException(503, "Uploads are not available right now")
     if not rate_limit(f"upload:{user['id']}", 5, 3600):
         raise HTTPException(429, "Upload limit reached (5/hour). Try again later.")
@@ -2099,10 +2201,97 @@ def admin_delete(video_id: int, _: None = Depends(require_admin)):
 @app.post("/api/admin/sync")
 async def admin_sync(body: dict = None, _: None = Depends(require_admin)):
     limit = (body or {}).get("limit", 300)
+    chan = (body or {}).get("channel_id")
     try:
-        return await sync_channel(limit=int(limit))
+        return await sync_channel(limit=int(limit),
+                                  channel_id=int(chan) if chan else None)
     except Exception as e:
         raise HTTPException(502, f"Sync failed: {str(e)[:300]}")
+
+
+# ------------------------------------------------- v21 channel migration
+# One-time tooling for switching the content source channel without
+# duplicating the library: (1) backfill every listing's Telegram document
+# id from its own channel, (2) rewrite refs of listings whose file also
+# lives in the new channel to that channel's message. Progress is kept in
+# _maint and read back via the status endpoint.
+_maint = {"running": False, "kind": "", "processed": 0, "updated": 0, "error": ""}
+
+
+async def _backfill_doc_ids():
+    _maint.update(running=True, kind="backfill", processed=0, updated=0, error="")
+    try:
+        client = await tg.client()
+        con = db()
+        chans = [r[0] for r in con.execute(
+            "SELECT DISTINCT tg_channel_id FROM videos "
+            "WHERE tg_channel_id IS NOT NULL").fetchall()]
+        con.close()
+        for chan in chans:
+            async for msg in client.iter_messages(chan, limit=None):
+                attrs = _video_attrs(msg)
+                if not attrs:
+                    continue
+                _maint["processed"] += 1
+                con = db()
+                cur = con.execute(
+                    "UPDATE videos SET tg_doc_id=? WHERE tg_file_unique_id=? "
+                    "AND (tg_doc_id IS NULL OR tg_doc_id='')",
+                    (attrs["unique_id"], f"{chan}:{msg.id}"))
+                _maint["updated"] += cur.rowcount
+                con.commit()
+                con.close()
+    except Exception as e:
+        _maint["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    finally:
+        _maint["running"] = False
+
+
+async def _rewrite_refs(target: int):
+    _maint.update(running=True, kind="rewrite", processed=0, updated=0, error="")
+    try:
+        client = await tg.client()
+        async for msg in client.iter_messages(target, limit=None):
+            attrs = _video_attrs(msg)
+            if not attrs:
+                continue
+            _maint["processed"] += 1
+            con = db()
+            cur = con.execute(
+                "UPDATE videos SET tg_channel_id=?, tg_message_id=?, tg_file_unique_id=? "
+                "WHERE tg_doc_id=? AND tg_channel_id != ?",
+                (target, msg.id, f"{target}:{msg.id}", attrs["unique_id"], target))
+            _maint["updated"] += cur.rowcount
+            con.commit()
+            con.close()
+    except Exception as e:
+        _maint["error"] = f"{type(e).__name__}: {str(e)[:200]}"
+    finally:
+        _maint["running"] = False
+
+
+@app.post("/api/admin/maint/backfill-doc-ids")
+async def admin_backfill_doc_ids(_: None = Depends(require_admin)):
+    if _maint["running"]:
+        raise HTTPException(409, "maintenance already running")
+    asyncio.create_task(_backfill_doc_ids())
+    return {"ok": True, "started": "backfill"}
+
+
+@app.post("/api/admin/maint/rewrite-refs")
+async def admin_rewrite_refs(body: dict, _: None = Depends(require_admin)):
+    if _maint["running"]:
+        raise HTTPException(409, "maintenance already running")
+    target = int((body or {}).get("channel_id") or 0)
+    if not target:
+        raise HTTPException(400, "channel_id required")
+    asyncio.create_task(_rewrite_refs(target))
+    return {"ok": True, "started": "rewrite", "target": target}
+
+
+@app.get("/api/admin/maint/status")
+def admin_maint_status(_: None = Depends(require_admin)):
+    return dict(_maint)
 
 
 # --- Telegram setup flow (all from the /admin page, no terminal needed) ---
